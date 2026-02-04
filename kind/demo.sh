@@ -18,6 +18,9 @@ s.close()
 EOF
 }
 
+DEFAULT_RCA_AGENT_IMAGE="quay.io/rh-ee-shesaxen/rca-agent:poc19"
+RCA_AGENT_IMAGE="${DEFAULT_RCA_AGENT_IMAGE}"
+
 REPO_URL="https://github.com/causaai/causa.git"
 REPO_NAME="causa"
 ARTIFACTS_DIR="artifacts"
@@ -35,12 +38,13 @@ KUBE_CONTEXT="kind-${CLUSTER_NAME}"
 FORCE=false
 TERMINATE=false
 
-while getopts ":ft" opt; do
+while getopts ":fti:" opt; do
   case "${opt}" in
     f) FORCE=true ;;
     t) TERMINATE=true ;;
+    i) RCA_AGENT_IMAGE="${OPTARG}" ;;
     *)
-      echo "Usage: $0 [-f] [-t]"
+      echo "Usage: $0 [-f] [-t] [-i <rca-agent-image>]"
       exit 1
       ;;
   esac
@@ -97,7 +101,7 @@ fi
 
 IMAGES=(
   "ollama/ollama:latest"
-  "quay.io/rh-ee-shesaxen/rca-agent:poc19"
+  "${RCA_AGENT_IMAGE}"
   "quay.io/doofenshmirtz/quarkus-crash:heap-oom"
 )
 
