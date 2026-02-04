@@ -27,7 +27,7 @@ What the demo does:
 
 Ensure the following tools are installed and available in your `$PATH` before running the demo:
 
-```
+```text
 kind
 
 docker
@@ -43,8 +43,26 @@ python3
 
 #### How to run the demo
 
-```shell
+```bash
 git clone https://github.com/causaai/causa-demos.git
 cd causa-demos/kind
 ./demo.sh
+```
+
+#### Steps After the Demo Script Completes
+
+Once the Kind demo script finishes running and reports that the Heap OOM has been reached, follow these steps to observe CAUSA AI in action:
+
+- Inspect CAUSA RCA Agent logs
+
+```bash
+kubectl logs -f <rca-agent-pod>
+```
+
+- Clean up resources when done
+
+Once you are done with the demo, proceed to clean it up with `-t` option
+
+```bash
+./demo.sh -t
 ```
