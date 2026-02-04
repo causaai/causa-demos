@@ -142,6 +142,17 @@ kubectl wait \
 
 kubectl apply -f "${PROM_DIR}/manifests"
 
+echo -n "Wait till prometheus pods comes up ... "
+kubectl wait \
+  --for=condition=Ready \
+  pod \
+  --all \
+  -n monitoring \
+  --timeout=10m
+
+echo "Done."
+
+
 echo "Installing heap-oom application"
 kubectl apply -f https://raw.githubusercontent.com/doofenshmirtz-dev/quarkus-crash/main/heap-oom/manifests/deploy.yaml
 
