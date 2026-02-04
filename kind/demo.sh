@@ -18,7 +18,7 @@ s.close()
 EOF
 }
 
-DEFAULT_RCA_AGENT_IMAGE="quay.io/rh-ee-shesaxen/rca-agent:poc19"
+DEFAULT_RCA_AGENT_IMAGE="quay.io/rh-ee-shesaxen/rca-agent:pocarm"
 RCA_AGENT_IMAGE="${DEFAULT_RCA_AGENT_IMAGE}"
 
 REPO_URL="https://github.com/causaai/causa.git"
