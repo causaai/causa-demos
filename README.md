@@ -18,6 +18,7 @@ What the demo does:
 - Installs CAUSA RCA Agent into the cluster
 - Installs Prometheus stack (via kube-prometheus)
 - Installs cAdvisor for container metrics
+- Deploys Ollama in-cluster and pulls the [phi3:mini](https://ollama.com/library/phi3) model to enable fully local, offline root cause analysis.
 - Deploys a Quarkus-based sample application that intentionally causes a Heap Out Of Memory (OOM) condition
 - Deploys a load generator that gradually increases heap usage
 - Triggers a controlled OOM failure in the application
@@ -40,6 +41,19 @@ jq
 
 python3
 ```
+
+##### Ollama Model Requirements: 
+
+- During deployment, the Ollama pod automatically pulls the required language model so it is available for inference at runtime. Currently, the following model is downloaded:
+
+    - **Model**: [phi3:mini](https://ollama.com/library/phi3) (Provided by Microsoft)
+    - Requires CPU-only execution with a minimum of 4 vCPUs (6+ vCPUs recommended).
+    - Requires at least 8 GB RAM (16 GB recommended for stability).
+    - ~ 2.5 GB to 3 GB free space is required for the model weights.
+    - *Note: CPU and memory requirements are inferred from the model size, as Ollama does not publish per-model resource limits.*
+
+
+
 
 #### How to run the demo
 

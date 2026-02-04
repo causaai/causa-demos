@@ -179,6 +179,14 @@ kubectl wait deployment/rca-agent \
 
 echo "All deployments are ready."
 
+echo "Pulling models in Ollama..."
+
+OLLAMA_POD="$(kubectl get pods -l app=ollama -o jsonpath='{.items[0].metadata.name}')"
+
+kubectl exec -it "${OLLAMA_POD}" -- ollama pull phi3:mini
+
+echo "phi3:mini model downloaded successfully."
+
 LOCAL_PORT="$(get_free_port)"
 SERVICE_PORT=8080
 SERVICE_NAME="heap-oom-service"
