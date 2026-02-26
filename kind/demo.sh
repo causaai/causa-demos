@@ -88,7 +88,7 @@ if [ "${TERMINATE}" = true ]; then
 
   echo "Cleaning up artifacts directory..."
   if [ -d "${ARTIFACTS_DIR}" ]; then
-    rm -rf "${ARTIFACTS_DIR}"
+    rm -rf -- "${ARTIFACTS_DIR}"
     echo "Artifacts directory removed."
   else
     echo "Artifacts directory does not exist."
