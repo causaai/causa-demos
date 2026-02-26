@@ -86,6 +86,14 @@ if [ "${TERMINATE}" = true ]; then
     echo "kind cluster '${CLUSTER_NAME}' does not exist. Nothing to terminate."
   fi
 
+  echo "Cleaning up artifacts directory..."
+  if [ -d "${ARTIFACTS_DIR}" ]; then
+    rm -rf "${ARTIFACTS_DIR}"
+    echo "Artifacts directory removed."
+  else
+    echo "Artifacts directory does not exist."
+  fi
+
   echo "Termination complete."
   exit 0
 fi
