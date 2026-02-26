@@ -24,7 +24,9 @@ RCA_AGENT_IMAGE="${DEFAULT_RCA_AGENT_IMAGE}"
 REPO_URL="https://github.com/causaai/causa.git"
 REPO_NAME="causa"
 ARTIFACTS_DIR="artifacts"
-DEPLOYMENT_DIR="deployment"
+DEPLOYMENT_DIR="deployment/kind"
+DEFAULT_BRANCH_NAME="main"
+BRANCH_NAME="${DEFAULT_BRANCH_NAME}"
 
 PROM_REPO_NAME="kube-prometheus"
 PROM_REPO_URL="https://github.com/prometheus-operator/kube-prometheus.git"
@@ -38,13 +40,14 @@ KUBE_CONTEXT="kind-${CLUSTER_NAME}"
 FORCE=false
 TERMINATE=false
 
-while getopts ":fti:" opt; do
+while getopts ":fti:b:" opt; do
   case "${opt}" in
     f) FORCE=true ;;
     t) TERMINATE=true ;;
     i) RCA_AGENT_IMAGE="${OPTARG}" ;;
+    b) BRANCH_NAME="${OPTARG}" ;;
     *)
-      echo "Usage: $0 [-f] [-t] [-i <rca-agent-image>]"
+      echo "Usage: $0 [-f] [-t] [-i <rca-agent-image>] [-b <branch-name>]"
       exit 1
       ;;
   esac
@@ -167,7 +170,7 @@ if [ "${FORCE}" = true ] && [ -d "${REPO_PATH}" ]; then
 fi
 
 if [ ! -d "${REPO_PATH}/.git" ]; then
-  git clone "${REPO_URL}" "${REPO_PATH}"
+  git clone -b "${BRANCH_NAME}" --single-branch "${REPO_URL}" "${REPO_PATH}"
 fi
 
 DEPLOY_PATH="${REPO_PATH}/${DEPLOYMENT_DIR}"
