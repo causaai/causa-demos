@@ -25,7 +25,7 @@ REPO_URL="https://github.com/causaai/causa.git"
 REPO_NAME="causa"
 ARTIFACTS_DIR="artifacts"
 DEPLOYMENT_DIR="deployment/kind"
-DEFAULT_BRANCH_NAME="main"
+DEFAULT_BRANCH_NAME="poc"
 BRANCH_NAME="${DEFAULT_BRANCH_NAME}"
 
 PROM_REPO_NAME="kube-prometheus"
