@@ -158,7 +158,7 @@ echo "Done."
 
 
 echo "Installing heap-oom application"
-kubectl apply -f https://raw.githubusercontent.com/doofenshmirtz-dev/quarkus-crash/main/heap-oom/manifests/deploy.yaml
+kubectl apply -f https://raw.githubusercontent.com/causaai/chaos-lab/refs/heads/main/heap-oom/manifests/deploy.yaml
 
 echo "Patching the application with rca label"
 kubectl patch deployment heap-oom -p '{"spec":{"template":{"metadata":{"labels":{"kruize/rca":"enabled"}}}}}'
@@ -190,7 +190,11 @@ kubectl wait deployment/heap-oom \
 
 kubectl wait deployment/ollama \
   --for=condition=Available \
-  --timeout=600s
+  --timeout=900s
+
+kubectl wait deployment/mongodb \
+  --for=condition=Available \
+  --timeout=300s
 
 kubectl wait deployment/rca-agent \
   --for=condition=Available \
