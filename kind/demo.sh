@@ -25,6 +25,7 @@ REPO_URL="https://github.com/causaai/causa.git"
 REPO_NAME="causa"
 ARTIFACTS_DIR="artifacts"
 DEPLOYMENT_DIR="deployment/kind"
+BRANCH_NAME="poc"
 
 PROM_REPO_NAME="kube-prometheus"
 PROM_REPO_URL="https://github.com/prometheus-operator/kube-prometheus.git"
@@ -167,7 +168,7 @@ if [ "${FORCE}" = true ] && [ -d "${REPO_PATH}" ]; then
 fi
 
 if [ ! -d "${REPO_PATH}/.git" ]; then
-  git clone "${REPO_URL}" "${REPO_PATH}"
+  git clone -b "${BRANCH_NAME}" --single-branch "${REPO_URL}" "${REPO_PATH}"
 fi
 
 DEPLOY_PATH="${REPO_PATH}/${DEPLOYMENT_DIR}"
