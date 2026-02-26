@@ -25,7 +25,8 @@ REPO_URL="https://github.com/causaai/causa.git"
 REPO_NAME="causa"
 ARTIFACTS_DIR="artifacts"
 DEPLOYMENT_DIR="deployment/kind"
-BRANCH_NAME="poc"
+DEFAULT_BRANCH_NAME="main"
+BRANCH_NAME="${DEFAULT_BRANCH_NAME}"
 
 PROM_REPO_NAME="kube-prometheus"
 PROM_REPO_URL="https://github.com/prometheus-operator/kube-prometheus.git"
@@ -39,13 +40,14 @@ KUBE_CONTEXT="kind-${CLUSTER_NAME}"
 FORCE=false
 TERMINATE=false
 
-while getopts ":fti:" opt; do
+while getopts ":fti:b:" opt; do
   case "${opt}" in
     f) FORCE=true ;;
     t) TERMINATE=true ;;
     i) RCA_AGENT_IMAGE="${OPTARG}" ;;
+    b) BRANCH_NAME="${OPTARG}" ;;
     *)
-      echo "Usage: $0 [-f] [-t] [-i <rca-agent-image>]"
+      echo "Usage: $0 [-f] [-t] [-i <rca-agent-image>] [-b <branch-name>]"
       exit 1
       ;;
   esac
