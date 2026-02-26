@@ -158,7 +158,7 @@ echo "Done."
 
 
 echo "Installing heap-oom application"
-kubectl apply -f https://raw.githubusercontent.com/causaai/chaos-lab/refs/heads/main/heap-oom/manifests/deploy.yaml
+kubectl apply -f https://raw.githubusercontent.com/causaai/chaos-lab/main/heap-oom/manifests/deploy.yaml
 
 echo "Patching the application with rca label"
 kubectl patch deployment heap-oom -p '{"spec":{"template":{"metadata":{"labels":{"kruize/rca":"enabled"}}}}}'
