@@ -24,7 +24,7 @@ RCA_AGENT_IMAGE="${DEFAULT_RCA_AGENT_IMAGE}"
 REPO_URL="https://github.com/causaai/causa.git"
 REPO_NAME="causa"
 ARTIFACTS_DIR="artifacts"
-DEPLOYMENT_DIR="deployment"
+DEPLOYMENT_DIR="deployment/kind"
 
 PROM_REPO_NAME="kube-prometheus"
 PROM_REPO_URL="https://github.com/prometheus-operator/kube-prometheus.git"
