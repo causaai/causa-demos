@@ -18,13 +18,14 @@ s.close()
 EOF
 }
 
-DEFAULT_RCA_AGENT_IMAGE="quay.io/rh-ee-shesaxen/rca-agent:poc_2.0"
+DEFAULT_RCA_AGENT_IMAGE="quay.io/rh-ee-shesaxen/rca-agent:poc_2.2"
 RCA_AGENT_IMAGE="${DEFAULT_RCA_AGENT_IMAGE}"
 
 REPO_URL="https://github.com/causaai/causa.git"
 REPO_NAME="causa"
 ARTIFACTS_DIR="artifacts"
 DEPLOYMENT_DIR="deployment/kind"
+ALERT_YAML_DIR="deployment/sample"
 DEFAULT_BRANCH_NAME="poc"
 BRANCH_NAME="${DEFAULT_BRANCH_NAME}"
 
@@ -53,11 +54,6 @@ while getopts ":fti:b:" opt; do
   esac
 done
 
-if [ "${FORCE}" = true ] && [ "${TERMINATE}" = true ]; then
-  echo "ERROR: -f and -t cannot be used together"
-  exit 1
-fi
-
 if [ "${TERMINATE}" = true ]; then
   echo "Termination requested. Cleaning up..."
 
@@ -84,6 +80,16 @@ if [ "${TERMINATE}" = true ]; then
     kind delete cluster --name "${CLUSTER_NAME}"
   else
     echo "kind cluster '${CLUSTER_NAME}' does not exist. Nothing to terminate."
+  fi
+
+  if [ "${FORCE}" = true ]; then
+    echo "Cleaning up artifacts directory..."
+    if [ -d "${ARTIFACTS_DIR}" ]; then
+      rm -rf -- "${ARTIFACTS_DIR}"
+      echo "Artifacts directory removed."
+    else
+      echo "Artifacts directory does not exist."
+    fi
   fi
 
   echo "Termination complete."
@@ -156,13 +162,6 @@ kubectl wait \
 
 echo "Done."
 
-
-echo "Installing heap-oom application"
-kubectl apply -f https://raw.githubusercontent.com/causaai/chaos-lab/main/heap-oom/manifests/deploy.yaml
-
-echo "Patching the application with rca label"
-kubectl patch deployment heap-oom -p '{"spec":{"template":{"metadata":{"labels":{"kruize/rca":"enabled"}}}}}'
-
 mkdir -p "${ARTIFACTS_DIR}"
 REPO_PATH="${ARTIFACTS_DIR}/${REPO_NAME}"
 
@@ -173,6 +172,20 @@ fi
 if [ ! -d "${REPO_PATH}/.git" ]; then
   git clone -b "${BRANCH_NAME}" --single-branch "${REPO_URL}" "${REPO_PATH}"
 fi
+
+ALERT_PATH="${REPO_PATH}/${ALERT_YAML_DIR}"
+if [ -d "${ALERT_PATH}" ]; then
+  echo "Applying Prometheus alert configurations..."
+  kubectl apply -f "${ALERT_PATH}/prometheus-alerting-kind.yaml"
+else
+  echo "WARNING: Alert configuration directory not found: ${ALERT_PATH}"
+fi
+
+echo "Installing heap-oom application"
+kubectl apply -f https://raw.githubusercontent.com/causaai/chaos-lab/main/heap-oom/manifests/deploy.yaml
+
+echo "Patching the application with rca label"
+kubectl patch deployment heap-oom -p '{"spec":{"template":{"metadata":{"labels":{"kruize/rca":"enabled"}}}}}'
 
 DEPLOY_PATH="${REPO_PATH}/${DEPLOYMENT_DIR}"
 if [ ! -d "${DEPLOY_PATH}" ]; then

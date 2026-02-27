@@ -80,3 +80,9 @@ Once you are done with the demo, proceed to clean it up with `-t` option
 ```bash
 ./demo.sh -t
 ```
+
+To also remove the artifacts directory during cleanup, use `-f` with `-t`:
+
+```bash
+./demo.sh -f -t
+```
