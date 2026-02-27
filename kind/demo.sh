@@ -18,7 +18,7 @@ s.close()
 EOF
 }
 
-DEFAULT_RCA_AGENT_IMAGE="quay.io/rh-ee-shesaxen/rca-agent:pocarm"
+DEFAULT_RCA_AGENT_IMAGE="quay.io/rh-ee-shesaxen/rca-agent:poc_2.0"
 RCA_AGENT_IMAGE="${DEFAULT_RCA_AGENT_IMAGE}"
 
 REPO_URL="https://github.com/causaai/causa.git"
@@ -103,9 +103,10 @@ if [ "${CURRENT_CONTEXT}" != "${KUBE_CONTEXT}" ]; then
 fi
 
 IMAGES=(
-  "ollama/ollama:latest"
+  "docker.io/ollama/ollama:0.17.1"
   "${RCA_AGENT_IMAGE}"
-  "quay.io/doofenshmirtz/quarkus-crash:heap-oom"
+  "docker.io/library/mongo:7.0"
+  "quay.io/causa-ai-hub/quarkus-heap-oom:latest"
 )
 
 echo "Preloading Docker images..."
@@ -157,7 +158,7 @@ echo "Done."
 
 
 echo "Installing heap-oom application"
-kubectl apply -f https://raw.githubusercontent.com/doofenshmirtz-dev/quarkus-crash/main/heap-oom/manifests/deploy.yaml
+kubectl apply -f https://raw.githubusercontent.com/causaai/chaos-lab/main/heap-oom/manifests/deploy.yaml
 
 echo "Patching the application with rca label"
 kubectl patch deployment heap-oom -p '{"spec":{"template":{"metadata":{"labels":{"kruize/rca":"enabled"}}}}}'
@@ -189,7 +190,11 @@ kubectl wait deployment/heap-oom \
 
 kubectl wait deployment/ollama \
   --for=condition=Available \
-  --timeout=600s
+  --timeout=900s
+
+kubectl wait deployment/mongodb \
+  --for=condition=Available \
+  --timeout=300s
 
 kubectl wait deployment/rca-agent \
   --for=condition=Available \
