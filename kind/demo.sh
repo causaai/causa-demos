@@ -173,6 +173,10 @@ if [ ! -d "${REPO_PATH}/.git" ]; then
   git clone -b "${BRANCH_NAME}" --single-branch "${REPO_URL}" "${REPO_PATH}"
 fi
 
+echo "Waiting for Prometheus custom resource to be fully available..."
+kubectl wait --for=condition=Available --timeout=300s \
+  -n monitoring prometheus/k8s
+
 ALERT_PATH="${REPO_PATH}/${ALERT_YAML_DIR}"
 if [ -d "${ALERT_PATH}" ]; then
   echo "Applying Prometheus alert configurations..."
@@ -193,7 +197,9 @@ if [ ! -d "${DEPLOY_PATH}" ]; then
   exit 1
 fi
 
-kubectl apply -f "${DEPLOY_PATH}"
+kubectl apply -f "${DEPLOY_PATH}/rbac.yaml"
+kubectl apply -f "${DEPLOY_PATH}/ollama.yaml"
+kubectl apply -f "${DEPLOY_PATH}/mongodb.yaml"
 
 echo "Waiting for application deployments to become ready..."
 
@@ -209,12 +215,6 @@ kubectl wait deployment/mongodb \
   --for=condition=Available \
   --timeout=300s
 
-kubectl wait deployment/rca-agent \
-  --for=condition=Available \
-  --timeout=300s
-
-echo "All deployments are ready."
-
 echo "Pulling models in Ollama..."
 
 OLLAMA_POD="$(kubectl get pods -l app=ollama -o jsonpath='{.items[0].metadata.name}')"
@@ -222,6 +222,15 @@ OLLAMA_POD="$(kubectl get pods -l app=ollama -o jsonpath='{.items[0].metadata.na
 kubectl exec -it "${OLLAMA_POD}" -- ollama pull phi3:mini
 
 echo "phi3:mini model downloaded successfully."
+
+kubectl apply -f "${DEPLOY_PATH}/deployment.yaml"
+echo "Waiting for RCA agent deployment to become ready..."
+
+kubectl wait deployment/rca-agent \
+  --for=condition=Available \
+  --timeout=300s
+
+echo "All deployments are ready."
 
 LOCAL_PORT="$(get_free_port)"
 SERVICE_PORT=8080
