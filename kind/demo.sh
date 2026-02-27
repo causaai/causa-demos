@@ -25,6 +25,7 @@ REPO_URL="https://github.com/causaai/causa.git"
 REPO_NAME="causa"
 ARTIFACTS_DIR="artifacts"
 DEPLOYMENT_DIR="deployment/kind"
+ALERT_YAML_DIR="deployment/sample"
 DEFAULT_BRANCH_NAME="poc"
 BRANCH_NAME="${DEFAULT_BRANCH_NAME}"
 
@@ -161,13 +162,6 @@ kubectl wait \
 
 echo "Done."
 
-
-echo "Installing heap-oom application"
-kubectl apply -f https://raw.githubusercontent.com/causaai/chaos-lab/main/heap-oom/manifests/deploy.yaml
-
-echo "Patching the application with rca label"
-kubectl patch deployment heap-oom -p '{"spec":{"template":{"metadata":{"labels":{"kruize/rca":"enabled"}}}}}'
-
 mkdir -p "${ARTIFACTS_DIR}"
 REPO_PATH="${ARTIFACTS_DIR}/${REPO_NAME}"
 
@@ -178,6 +172,20 @@ fi
 if [ ! -d "${REPO_PATH}/.git" ]; then
   git clone -b "${BRANCH_NAME}" --single-branch "${REPO_URL}" "${REPO_PATH}"
 fi
+
+ALERT_PATH="${REPO_PATH}/${ALERT_YAML_DIR}"
+if [ -d "${ALERT_PATH}" ]; then
+  echo "Applying Prometheus alert configurations..."
+  kubectl apply -f "${ALERT_PATH}/prometheus-alerting-kind.yaml"
+else
+  echo "WARNING: Alert configuration directory not found: ${ALERT_PATH}"
+fi
+
+echo "Installing heap-oom application"
+kubectl apply -f https://raw.githubusercontent.com/causaai/chaos-lab/main/heap-oom/manifests/deploy.yaml
+
+echo "Patching the application with rca label"
+kubectl patch deployment heap-oom -p '{"spec":{"template":{"metadata":{"labels":{"kruize/rca":"enabled"}}}}}'
 
 DEPLOY_PATH="${REPO_PATH}/${DEPLOYMENT_DIR}"
 if [ ! -d "${DEPLOY_PATH}" ]; then
