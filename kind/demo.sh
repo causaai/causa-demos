@@ -53,11 +53,6 @@ while getopts ":fti:b:" opt; do
   esac
 done
 
-if [ "${FORCE}" = true ] && [ "${TERMINATE}" = true ]; then
-  echo "ERROR: -f and -t cannot be used together"
-  exit 1
-fi
-
 if [ "${TERMINATE}" = true ]; then
   echo "Termination requested. Cleaning up..."
 
@@ -86,12 +81,14 @@ if [ "${TERMINATE}" = true ]; then
     echo "kind cluster '${CLUSTER_NAME}' does not exist. Nothing to terminate."
   fi
 
-  echo "Cleaning up artifacts directory..."
-  if [ -d "${ARTIFACTS_DIR}" ]; then
-    rm -rf -- "${ARTIFACTS_DIR}"
-    echo "Artifacts directory removed."
-  else
-    echo "Artifacts directory does not exist."
+  if [ "${FORCE}" = true ]; then
+    echo "Cleaning up artifacts directory..."
+    if [ -d "${ARTIFACTS_DIR}" ]; then
+      rm -rf -- "${ARTIFACTS_DIR}"
+      echo "Artifacts directory removed."
+    else
+      echo "Artifacts directory does not exist."
+    fi
   fi
 
   echo "Termination complete."
