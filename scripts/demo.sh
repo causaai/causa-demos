@@ -328,7 +328,7 @@ kubectl apply -f "${DEPLOY_PATH}/mongodb.yaml"
 
 echo "Waiting for application deployments to become ready..."
 
-kubectl wait deployment/heap-oom-prom \
+kubectl wait -n chaos-test deployment/heap-oom-prom \
   --for=condition=Available \
   --timeout=300s
 
