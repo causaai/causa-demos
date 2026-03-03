@@ -1,23 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-for bin in curl kind kubectl git docker jq python3; do
-  command -v "${bin}" >/dev/null 2>&1 || {
-    echo "ERROR: ${bin} is not installed"
-    exit 1
-  }
-done
-
-get_free_port() {
-  python3 - <<'EOF'
-import socket
-s = socket.socket()
-s.bind(('', 0))
-print(s.getsockname()[1])
-s.close()
-EOF
-}
-
 DEFAULT_RCA_AGENT_IMAGE="quay.io/rh-ee-shesaxen/rca-agent:poc_test12"
 RCA_AGENT_IMAGE="${DEFAULT_RCA_AGENT_IMAGE}"
 
@@ -65,6 +48,22 @@ while getopts ":fti:b:lc:" opt; do
   esac
 done
 
+# Always required
+REQUIRED_BINS=(curl kubectl git)
+
+# Conditionally required
+if [[ "${CLUSTER_TYPE}" == "kind" ]]; then
+  REQUIRED_BINS+=(kind docker jq python3)
+fi
+
+# Validate tools
+for bin in "${REQUIRED_BINS[@]}"; do
+  if ! command -v "${bin}" >/dev/null 2>&1; then
+    echo "ERROR: ${bin} is not installed"
+    exit 1
+  fi
+done
+
 install_cadvisor() {
   echo "Installing cAdvisor..."
   kubectl create namespace cadvisor --dry-run=client -o yaml | kubectl apply -f -
@@ -98,6 +97,16 @@ install_prom() {
     --timeout=10m
 
   echo "Done."
+}
+
+get_free_port() {
+  python3 - <<'EOF'
+import socket
+s = socket.socket()
+s.bind(('', 0))
+print(s.getsockname()[1])
+s.close()
+EOF
 }
 
 run_heap_load() {
