@@ -1,88 +1,226 @@
-# causa-demos
+# Causa Demo
 
-### This Repository contains the demos for CAUSA AI
+This repository contains a demonstration setup for the Causa RCA (Root Cause Analysis) agent, showcasing automated incident detection and analysis capabilities using Prometheus monitoring and AI-powered diagnostics.
 
-This repository provides runnable demos to showcase CAUSA AI capabilities in Kubernetes environments.
+## Overview
 
-Currently, it contains a Kind-based demo that sets up a complete local Kubernetes environment and triggers a controlled failure scenario for RCA (Root Cause Analysis).
+The demo script automates the deployment of a complete monitoring and analysis stack, including:
+- **Prometheus Operator** for metrics collection and alerting
+- **cAdvisor** for container metrics
+- **Ollama** with LLaMA 2 model for AI-powered analysis
+- **MongoDB** for data persistence
+- **Causa RCA Agent** for automated root cause analysis
+- **Heap OOM Application** as a sample workload to demonstrate failure scenarios
 
-### Available Demos
+## Supported Platforms
 
-#### 1. Kind Demo
+This demo supports two Kubernetes platforms:
 
-The Kind demo provisions a local Kubernetes cluster using kind and installs all required components to demonstrate CAUSA AI in action.
+### 1. **Kind (Kubernetes in Docker)** - Default
+- Creates a local Kubernetes cluster using Kind
+- Automatically handles cluster creation and image loading
+- Ideal for local development and testing
 
-What the demo does:
+### 2. **OpenShift**
+- Works with existing OpenShift clusters
+- Skips cluster creation and image loading steps
+- Uses OpenShift-specific alert configurations
 
-- Creates a kind Kubernetes cluster named causa
-- Installs CAUSA RCA Agent into the cluster
-- Installs Prometheus stack (via kube-prometheus)
-- Installs cAdvisor for container metrics
-- Deploys Ollama in-cluster and pulls the [phi3:mini](https://ollama.com/library/phi3) model to enable fully local, offline root cause analysis.
-- Deploys a Quarkus-based sample application that intentionally causes a Heap Out Of Memory (OOM) condition
-- Deploys a load generator that gradually increases heap usage
-- Triggers a controlled OOM failure in the application
-- Allows CAUSA RCA Agent to analyze the failure and produce RCA logs
+## Prerequisites
 
-#### Prerequisites
+### Common Requirements (Both Platforms)
+- `curl`
+- `kubectl`
+- `git`
 
-Ensure the following tools are installed and available in your `$PATH` before running the demo:
+### Additional Requirements for Kind
+- `kind`
+- `docker`
+- `jq`
+- `python3`
 
-```text
-kind
+## Usage
 
-docker
-
-kubectl
-
-git
-
-jq
-
-python3
-```
-
-##### Ollama Model Requirements: 
-
-- During deployment, the Ollama pod automatically pulls the required language model so it is available for inference at runtime. Currently, the following model is downloaded:
-
-    - **Model**: [phi3:mini](https://ollama.com/library/phi3) (Provided by Microsoft)
-    - Requires CPU-only execution with a minimum of 4 vCPUs (6+ vCPUs recommended).
-    - Requires at least 8 GB RAM (16 GB recommended for stability).
-    - ~ 2.5 GB to 3 GB free space is required for the model weights.
-    - *Note: CPU and memory requirements are inferred from the model size, as Ollama does not publish per-model resource limits.*
-
-
-
-
-#### How to run the demo
+### Basic Setup
 
 ```bash
-git clone https://github.com/causaai/causa-demos.git
-cd causa-demos/kind
-./demo.sh
+# For Kind (default)
+./scripts/demo.sh
+
+# For OpenShift
+./scripts/demo.sh -c openshift
 ```
 
-#### Steps After the Demo Script Completes
+### Command-Line Options
 
-Once the Kind demo script finishes running and reports that the Heap OOM has been reached, follow these steps to observe CAUSA AI in action:
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-c <type>` | Cluster type: `kind` or `openshift` | `kind` |
+| `-i <image>` | Custom RCA agent image | `quay.io/rh-ee-shesaxen/rca-agent:poc_v9` |
+| `-b <branch>` | Git branch to clone from causa repository | `poc` |
+| `-l` | Enable heap load generation for demo | Disabled |
+| `-f` | Force cleanup of artifacts directory | Disabled |
+| `-t` | Terminate and cleanup all resources | Disabled |
 
-- Inspect CAUSA RCA Agent logs
+### Examples
 
 ```bash
-kubectl logs -f <rca-agent-pod>
+# Setup with custom RCA agent image
+./scripts/demo.sh -i quay.io/myorg/rca-agent:latest
+
+# Setup and run heap OOM load test
+./scripts/demo.sh -l
+
+# Setup on OpenShift with load generation
+./scripts/demo.sh -c openshift -l
+
+# Cleanup everything including artifacts
+./scripts/demo.sh -t -f
 ```
 
-- Clean up resources when done
+## What the Demo Does
 
-Once you are done with the demo, proceed to clean it up with `-t` option
+### For Kind Clusters
 
+1. **Cluster Setup**
+   - Creates a Kind cluster named `causa`
+   - Sets the kubectl context to `kind-causa`
+
+2. **Image Pre-loading**
+   - Pulls and loads the following images into the Kind cluster:
+     - `ollama/ollama:0.17.1`
+     - RCA agent image (configurable)
+     - `mongo:7.0`
+     - `quarkus-heap-oom:heap-oom-prom`
+
+3. **Monitoring Stack Installation**
+   - Deploys cAdvisor for container metrics
+   - Installs Prometheus Operator (v0.13.0)
+   - Configures Prometheus custom resources
+   - Waits for all monitoring components to be ready
+
+4. **Application Deployment**
+   - Clones the Causa repository
+   - Applies Kind-specific Prometheus alert configurations
+   - Deploys the heap-oom test application
+   - Patches the application with RCA labels (`kruize/rca: enabled`)
+   - Deploys RBAC, Ollama, and MongoDB
+   - Deploys the RCA agent
+
+5. **Model Setup**
+   - Downloads the `llama2:7b-chat-q8_0` model into Ollama
+   - Waits for all deployments to become available
+
+6. **Optional Load Generation** (with `-l` flag)
+   - Port-forwards the heap-oom service
+   - Sends controlled allocation requests
+   - Triggers an OOM scenario for demonstration
+
+### For OpenShift Clusters
+
+1. **Monitoring Stack Installation**
+   - Assumes cluster already exists
+   - Installs cAdvisor for container metrics
+   - Installs Prometheus Operator (v0.13.0)
+   - Configures Prometheus custom resources
+
+2. **Application Deployment**
+   - Clones the Causa repository
+   - Applies OpenShift-specific Prometheus alert configurations
+   - Deploys the heap-oom test application
+   - Patches the application with RCA labels
+   - Deploys RBAC, Ollama, and MongoDB
+   - Deploys the RCA agent
+
+3. **Model Setup**
+   - Downloads the `llama2:7b-chat-q8_0` model into Ollama
+   - Waits for all deployments to become available
+
+4. **Optional Load Generation** (with `-l` flag)
+   - Same as Kind setup
+
+## Cleanup
+
+### Partial Cleanup (Keep Artifacts)
 ```bash
-./demo.sh -t
+./scripts/demo.sh -t
 ```
 
-To also remove the artifacts directory during cleanup, use `-f` with `-t`:
+This removes:
+- Application deployments
+- Prometheus stack
+- cAdvisor
+- Kind cluster (if using Kind)
 
+### Full Cleanup (Remove Everything)
 ```bash
-./demo.sh -f -t
+./scripts/demo.sh -t -f
+```
+
+This removes everything above plus:
+- Cloned repositories
+- Downloaded artifacts
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Kubernetes Cluster                    │
+│  ┌────────────┐  ┌──────────┐  ┌─────────────────────┐ │
+│  │  cAdvisor  │  │Prometheus│  │   Heap OOM App      │ │
+│  │ (metrics)  │─▶│ Operator │◀─│ (test workload)     │ │
+│  └────────────┘  └──────────┘  └─────────────────────┘ │
+│                        │                                 │
+│                        ▼                                 │
+│  ┌────────────────────────────────────────────────────┐ │
+│  │              Prometheus Alerts                      │ │
+│  └────────────────────────────────────────────────────┘ │
+│                        │                                 │
+│                        ▼                                 │
+│  ┌────────────┐  ┌──────────┐  ┌─────────────────────┐ │
+│  │  MongoDB   │◀─│RCA Agent │─▶│  Ollama + LLaMA 2   │ │
+│  │ (storage)  │  │          │  │  (AI analysis)      │ │
+│  └────────────┘  └──────────┘  └─────────────────────┘ │
+└─────────────────────────────────────────────────────────┘
+```
+
+## Troubleshooting
+
+### Check Pod Status
+```bash
+kubectl get pods --all-namespaces
+```
+
+### View RCA Agent Logs
+```bash
+kubectl logs -l app=rca-agent -f
+```
+
+### View Prometheus Alerts
+```bash
+kubectl port-forward -n monitoring svc/prometheus-k8s 9090:9090
+# Access http://localhost:9090/alerts
+```
+
+### Verify Ollama Model
+```bash
+OLLAMA_POD=$(kubectl get pods -l app=ollama -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -it $OLLAMA_POD -- ollama list
+```
+
+## Repository Structure
+
+```
+.
+├── scripts/
+│   └── demo.sh              # Main demo automation script
+├── artifacts/               # Created during setup (gitignored)
+│   ├── causa/              # Cloned Causa repository
+│   └── kube-prometheus/    # Cloned Prometheus Operator
+└── README.md               # This file
+```
+
+## License
+
+See [LICENSE](LICENSE) file for details.
 ```
