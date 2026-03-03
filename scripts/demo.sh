@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_RCA_AGENT_IMAGE="quay.io/rh-ee-shesaxen/rca-agent:poc_test12"
+DEFAULT_RCA_AGENT_IMAGE="quay.io/rh-ee-shesaxen/rca-agent:poc_v9"
 RCA_AGENT_IMAGE="${DEFAULT_RCA_AGENT_IMAGE}"
 
 REPO_URL="https://github.com/causaai/causa.git"
