@@ -176,44 +176,67 @@ run_heap_load() {
 }
 
 if [ "${TERMINATE}" = true ]; then
-  echo "Termination requested. Cleaning up..."
+  echo "Termination requested for ${CLUSTER_TYPE} cluster. Cleaning up..."
 
-  if kind get clusters | grep -qx "${CLUSTER_NAME}"; then
-    kubectl config use-context "${KUBE_CONTEXT}" || true
+  if [[ "${CLUSTER_TYPE}" == "openshift" ]]; then
+    # OpenShift cleanup path
+    echo "Cleaning up OpenShift resources..."
+    
+    # Delete RCA agent
+    kubectl delete -f "${ARTIFACTS_DIR}/${REPO_NAME}/${DEPLOYMENT_DIR}/deployment.yaml" --ignore-not-found
+    
+    # Delete heap-oom application
+    kubectl delete -f https://raw.githubusercontent.com/causaai/chaos-lab/main/heap-oom-prom/manifests/deploy.yaml --ignore-not-found
+    
+    # Delete alerts
+    kubectl delete -f "${ARTIFACTS_DIR}/${REPO_NAME}/${ALERT_YAML_DIR}/prometheus-alerting-openshift.yaml" --ignore-not-found
+    
+    # Delete supporting resources (ollama, mongodb, rbac)
+    kubectl delete -f "${ARTIFACTS_DIR}/${REPO_NAME}/${DEPLOYMENT_DIR}/ollama.yaml" --ignore-not-found
+    kubectl delete -f "${ARTIFACTS_DIR}/${REPO_NAME}/${DEPLOYMENT_DIR}/mongodb.yaml" --ignore-not-found
+    kubectl delete -f "${ARTIFACTS_DIR}/${REPO_NAME}/${DEPLOYMENT_DIR}/rbac.yaml" --ignore-not-found
+    
+  elif [[ "${CLUSTER_TYPE}" == "kind" ]]; then
+    # Kind cleanup path
+    if kind get clusters | grep -qx "${CLUSTER_NAME}"; then
+      kubectl config use-context "${KUBE_CONTEXT}" || true
 
-    echo "Deleting application resources..."
-    if [ -d "${ARTIFACTS_DIR}/${REPO_NAME}/${DEPLOYMENT_DIR}" ]; then
-      kubectl delete -f "${ARTIFACTS_DIR}/${REPO_NAME}/${DEPLOYMENT_DIR}" --ignore-not-found
+      # Delete RCA agent and supporting resources
+      if [ -d "${ARTIFACTS_DIR}/${REPO_NAME}/${DEPLOYMENT_DIR}" ]; then
+        kubectl delete -f "${ARTIFACTS_DIR}/${REPO_NAME}/${DEPLOYMENT_DIR}" --ignore-not-found
+      fi
+
+      # Delete heap-oom application
+      kubectl delete -f https://raw.githubusercontent.com/causaai/chaos-lab/main/heap-oom-prom/manifests/deploy.yaml --ignore-not-found
+
+      # Delete alerts
+      kubectl delete -f "${ARTIFACTS_DIR}/${REPO_NAME}/${ALERT_YAML_DIR}/prometheus-alerting-kind.yaml" --ignore-not-found
+
+      # Delete Prometheus
+      kubectl delete -f "${PROM_DIR}/manifests" --ignore-not-found
+      kubectl delete namespace monitoring --ignore-not-found
+
+      # Delete cAdvisor
+      kubectl delete -f https://raw.githubusercontent.com/google/cadvisor/master/deploy/kubernetes/base/daemonset.yaml --ignore-not-found || true
+
+      # Delete Kind cluster
+      echo "Deleting kind cluster '${CLUSTER_NAME}'..."
+      kind delete cluster --name "${CLUSTER_NAME}"
+    else
+      echo "kind cluster '${CLUSTER_NAME}' does not exist. Nothing to terminate."
     fi
-
-    echo "Deleting heap-oom application"
-    kubectl delete -f https://raw.githubusercontent.com/bharathappali/chaos-lab/add-heap-oom-prom/heap-oom-prom/manifests/deploy.yaml
-
-    echo "Deleting Prometheus resources..."
-    kubectl delete -f "${PROM_DIR}/manifests" --ignore-not-found
-    kubectl delete namespace monitoring --ignore-not-found
-
-    echo "Deleting cAdvisor resources..."
-    kubectl delete -f https://raw.githubusercontent.com/google/cadvisor/master/deploy/kubernetes/base/daemonset.yaml \
-      --ignore-not-found || true
-
-    echo "Deleting kind cluster '${CLUSTER_NAME}'..."
-    kind delete cluster --name "${CLUSTER_NAME}"
-  else
-    echo "kind cluster '${CLUSTER_NAME}' does not exist. Nothing to terminate."
   fi
 
+  # Force cleanup of artifacts (common to both paths)
   if [ "${FORCE}" = true ]; then
     echo "Cleaning up artifacts directory..."
     if [ -d "${ARTIFACTS_DIR}" ]; then
       rm -rf -- "${ARTIFACTS_DIR}"
       echo "Artifacts directory removed."
-    else
-      echo "Artifacts directory does not exist."
     fi
   fi
 
-  echo "Termination complete."
+  echo "Termination complete for ${CLUSTER_TYPE}."
   exit 0
 fi
 
@@ -288,7 +311,7 @@ else
 fi
 
 echo "Installing heap-oom application"
-kubectl apply -f https://raw.githubusercontent.com/causaai/chaos-lab/add-heap-oom-prom/heap-oom-prom/manifests/deploy.yaml
+kubectl apply -f https://raw.githubusercontent.com/causaai/chaos-lab/main/heap-oom-prom/manifests/deploy.yaml
 
 echo "Patching the application with rca label"
 kubectl patch -n chaos-test deployment heap-oom-prom -p '{"spec":{"template":{"metadata":{"labels":{"kruize/rca":"enabled"}}}}}'
