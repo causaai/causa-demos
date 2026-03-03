@@ -7,7 +7,6 @@ RCA_AGENT_IMAGE="${DEFAULT_RCA_AGENT_IMAGE}"
 REPO_URL="https://github.com/causaai/causa.git"
 REPO_NAME="causa"
 ARTIFACTS_DIR="artifacts"
-DEPLOYMENT_DIR="deployment/kind"
 ALERT_YAML_DIR="deployment/sample"
 DEFAULT_BRANCH_NAME="poc"
 BRANCH_NAME="${DEFAULT_BRANCH_NAME}"
@@ -47,6 +46,13 @@ while getopts ":fti:b:lc:" opt; do
       ;;
   esac
 done
+
+# Set deployment directory based on cluster type
+if [[ "${CLUSTER_TYPE}" == "openshift" ]]; then
+  DEPLOYMENT_DIR="deployment/openshift"
+else
+  DEPLOYMENT_DIR="deployment/kind"
+fi
 
 # Always required
 REQUIRED_BINS=(curl kubectl git)
