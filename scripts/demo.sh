@@ -370,4 +370,22 @@ else
   echo "Load generation disabled. Use -l to enable heap load demo."
 fi
 
-echo "Causa Demo Setup complete."
+echo ""
+echo "Setting up port-forward for RCA Agent Dashboard..."
+RCA_LOCAL_PORT=9090
+kubectl port-forward -n default svc/rca-agent ${RCA_LOCAL_PORT}:9090 >/dev/null 2>&1 &
+PF_RCA_PID=$!
+
+echo "Waiting for port-forward to be active..."
+sleep 3
+
+echo ""
+echo "=========================================="
+echo "Causa Demo Setup Complete!"
+echo "=========================================="
+echo ""
+echo "RCA Agent Dashboard: http://localhost:${RCA_LOCAL_PORT}"
+echo ""
+echo "To stop port-forward: kill ${PF_RCA_PID}"
+echo "=========================================="
+
