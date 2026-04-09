@@ -5,7 +5,7 @@ DEFAULT_OLLAMA_IMAGE="docker.io/ollama/ollama:0.17.1"
 DEFAULT_MONGO_IMAGE="docker.io/library/mongo:7.0"
 DEFAULT_HEAP_OOM_IMAGE="quay.io/causa-ai-hub/quarkus-heap-oom:heap-oom-prom"
 
-DEFAULT_RCA_AGENT_IMAGE="quay.io/rh-ee-shesaxen/rca-agent:poc_v9"
+DEFAULT_RCA_AGENT_IMAGE="quay.io/rh-ee-shesaxen/rca-agent:poc_mar21"
 RCA_AGENT_IMAGE="${DEFAULT_RCA_AGENT_IMAGE}"
 OLLAMA_IMAGE="${$DEFAULT_OLLAMA_IMAGE}"
 MONGO_IMAGE="${$DEFAULT_MONGO_IMAGE}"
