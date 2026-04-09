@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+DEFAULT_OLLAMA_IMAGE="docker.io/ollama/ollama:0.17.1"
+DEFAULT_MONGO_IMAGE="docker.io/library/mongo:7.0"
+DEFAULT_HEAP_OOM_IMAGE="quay.io/causa-ai-hub/quarkus-heap-oom:heap-oom-prom"
+
 DEFAULT_RCA_AGENT_IMAGE="quay.io/rh-ee-shesaxen/rca-agent:poc_v9"
 RCA_AGENT_IMAGE="${DEFAULT_RCA_AGENT_IMAGE}"
+OLLAMA_IMAGE="${$DEFAULT_OLLAMA_IMAGE}"
+MONGO_IMAGE="${$DEFAULT_MONGO_IMAGE}"
+HEAP_OOM_IMAGE="${$DEFAULT_HEAP_OOM_IMAGE}"
+
 
 REPO_URL="https://github.com/causaai/causa.git"
 REPO_NAME="causa"
@@ -40,8 +48,11 @@ while getopts ":fti:b:lc:" opt; do
       fi
       CLUSTER_TYPE="${OPTARG}"
       ;;
+    o) OLLAMA_IMAGE="${OPTARG}" ;;
+    m) MONGO_IMAGE="${OPTARG}" ;;
+    w) HEAP_OOM_IMAGE="${OPTARG}" ;;
     *)
-      echo "Usage: $0 [-f] [-t] [-l] [-c <Cluster Type: kind | openshift>] [-i <rca-agent-image>] [-b <branch-name>]"
+      echo "Usage: $0 [-f] [-t] [-l] [-c <Cluster Type: kind | openshift>] [-i <rca-agent-image>] [-o <ollama-image>] [-m <mongo-image>] [-w <heap-oom-image>] [-b <branch-name>]"
       exit 1
       ;;
   esac
@@ -265,10 +276,10 @@ if [[ "${CLUSTER_TYPE}" == "kind" ]]; then
 
   # pre-load images
   IMAGES=(
-    "docker.io/ollama/ollama:0.17.1"
+    "${OLLAMA_IMAGE}"
     "${RCA_AGENT_IMAGE}"
-    "docker.io/library/mongo:7.0"
-    "quay.io/causa-ai-hub/quarkus-heap-oom:heap-oom-prom"
+    "${MONGO_IMAGE}"
+    "${HEAP_OOM_IMAGE}"
   )
 
   echo "Preloading Docker images..."
