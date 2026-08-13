@@ -6,6 +6,8 @@
 
 ## Available Demos
 
+The two demos are **independent** — each provisions its own Kind cluster and can be run in any order or in isolation. You do not need to run the Kind demo before the Quarkus RCA demo.
+
 ### 1. Kind Demo
 
 Provisions a local Kubernetes cluster using Kind and installs all required components to demonstrate Causa AI in action with a fully local, offline setup.
@@ -54,7 +56,7 @@ An end-to-end demo that deploys a **quarkus-perf** workload engineered to OOMKil
 
 **What the demo does:**
 
-- Provisions a Kind cluster and deploys the full Causa RCA stack via the [Quarkus RCA installer](https://github.com/gulati-aakriti/installer)
+- Provisions a Kind cluster and deploys the full Causa RCA stack via the [Quarkus RCA installer](https://github.com/gulati-aakriti/installer) _(personal fork, work in progress — the installer URL can be overridden via `--installer-url` if an official repo is available)_
 - Deploys **quarkus-perf** with chaos flags enabled (`CHAOS_MEMORY_CACHE_ENABLED=true`) — the workload leaks 192 KB of heap per transaction with no eviction, OOMKilling in approximately 3–5 minutes under load
 - Pushes LLM credentials (Vertex AI / Claude) and alert cooldown to Causa Backend
 - Registers the Causa MCP server in `~/.bob/settings/mcp.json` and installs the `causa-rca` skill into Bob IDE

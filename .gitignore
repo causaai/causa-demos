@@ -1,4 +1,9 @@
 # ── Credentials and secrets — NEVER commit these ──────────────────────────
+# demo.sh reads exactly two secret files, both from quarkus-rca/:
+#   llm.env            — Vertex AI project ID, model, and alert cooldown
+#   causa-gcp-key.json — GCP service-account key used to create the
+#                        causa-gcp-credentials K8s Secret
+# No alternate paths or filenames are used by the scripts.
 quarkus-rca/llm.env
 quarkus-rca/causa-gcp-key.json
 
