@@ -1,1 +1,26 @@
-kind/artifacts
+# ── Credentials and secrets — NEVER commit these ──────────────────────────
+quarkus-rca/llm.env
+quarkus-rca/causa-gcp-key.json
+
+# ── Demo artifacts (cloned repos + logs written at demo runtime) ───────────
+quarkus-rca/artifacts/
+kind/artifacts/
+*.log
+quarkus-rca-demo.log
+
+# ── macOS metadata ─────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Editor / IDE ───────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Bob IDE internal folders (not project config) ─────────────────────────
+# Keep: .bob/skills/ (workspace skills — committed intentionally)
+# Ignore: .bob/artifacts/ (generated HTML reports)
+.bob/artifacts/
