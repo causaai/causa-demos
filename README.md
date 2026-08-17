@@ -52,15 +52,15 @@ cd causa-demos/kind
 
 ### 2. Quarkus RCA Demo
 
-An end-to-end demo that deploys a **quarkus-perf** workload engineered to OOMKill, installs the full Causa RCA stack (Causa Backend, Causa MCP, Kubernetes MCP Server, PostgreSQL, Prometheus), configures LLM credentials, and wires up **Bob IDE** for AI-powered root cause analysis.
+An end-to-end demo that deploys a **quarkus-perf** workload engineered for chaos testing, installs the full Causa RCA stack (Causa Backend, Causa MCP, Kubernetes MCP Server, PostgreSQL, Prometheus), configures LLM credentials (Vertex AI, Bob, Anthropic, OpenAI), and wires up **Bob IDE** or **Claude Desktop** for AI-powered root cause analysis.
 
 **What the demo does:**
 
-- Provisions a Kind cluster and deploys the full Causa RCA stack via the [Quarkus RCA installer](https://github.com/gulati-aakriti/installer) _(personal fork, work in progress — the installer URL can be overridden via `--installer-url` if an official repo is available)_
-- Deploys **quarkus-perf** with chaos flags enabled (`CHAOS_MEMORY_CACHE_ENABLED=true`) — the workload leaks 192 KB of heap per transaction with no eviction, resulting in the workload being OOM-killed in approximately 3–5 minutes under load
-- Pushes LLM credentials (Vertex AI / Claude) and alert cooldown to Causa Backend
-- Registers the Causa MCP server in `~/.bob/settings/mcp.json` and installs the `causa-rca` skill into Bob IDE
-- Prints a ready-to-paste Bob IDE prompt for triggering RCA
+- Provisions the target environment (`kind`, `openshift`, `vm`) and deploys the full Causa RCA stack via the [Quarkus RCA installer](https://github.com/causaai/installer)
+- Deploys **quarkus-perf** with chaos scenarios enabled (`large-response`, `idle-timeout`, `memory-cache`)
+- Pushes configurable LLM credentials (Vertex AI, Bob, Anthropic, OpenAI) to Causa Backend
+- Registers the Causa MCP server in your selected frontend assistant (Bob IDE or Claude Desktop) and installs the `causa-rca` skill
+- Prints ready-to-paste prompts for triggering RCA from any AI assistant
 
 **Prerequisites:**
 
