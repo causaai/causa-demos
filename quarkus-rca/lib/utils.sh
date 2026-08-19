@@ -2,7 +2,6 @@
 ################################################################################
 # Common Utilities — Quarkus RCA Demo
 #
-# Adapted from the runtimes-intelligence-demo utilities for a Kind cluster
 # with kubectl (no oc dependency).
 ################################################################################
 
@@ -59,6 +58,16 @@ clone_repo() {
         log_error "clone_repo requires repo_url and target_dir"
         return 1
     fi
+    if [[ -d "$target_dir" ]]; then
+        # If the remote URL has changed, discard the stale clone and re-clone.
+        local existing_remote
+        existing_remote=$(git -C "$target_dir" remote get-url origin 2>/dev/null || true)
+        if [[ "$existing_remote" != "$repo_url" ]]; then
+            log_file_only "Remote mismatch (have: $existing_remote, want: $repo_url) — re-cloning"
+            rm -rf "$target_dir"
+        fi
+    fi
+
     if [[ -d "$target_dir" ]]; then
         cd "$target_dir" || return 1
         if [[ -n "$branch" ]]; then
