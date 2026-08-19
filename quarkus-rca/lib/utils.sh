@@ -2,7 +2,6 @@
 ################################################################################
 # Common Utilities — Quarkus RCA Demo
 #
-# Adapted from the runtimes-intelligence-demo utilities for a Kind cluster
 # with kubectl (no oc dependency).
 ################################################################################
 

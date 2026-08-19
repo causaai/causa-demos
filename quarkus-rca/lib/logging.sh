@@ -4,8 +4,7 @@
 # Logging Library — Demo Scripts
 #
 # Mirrors the function contract of demos/installer/lib/logging.sh so that
-# runtimes-intelligence-demo.sh produces output in the same format as the
-# installer:
+# scripts produce output in the same format as the installer:
 #
 #   Terminal  — section headers, single-line "Component ✓" success lines,
 #               errors, and the "Logging initialized" banner only.
