@@ -1,8 +1,7 @@
 #!/bin/bash
 ################################################################################
 # Common Utilities — Quarkus RCA Demo
-#
-# with kubectl (no oc dependency).
+# Kind cluster / kubectl (no oc dependency).
 ################################################################################
 
 # Prevent multiple sourcing
@@ -70,27 +69,30 @@ clone_repo() {
 
     if [[ -d "$target_dir" ]]; then
         cd "$target_dir" || return 1
+        local _update_ok=true
         if [[ -n "$branch" ]]; then
-            git fetch origin >>"$LOG_FILE" 2>&1 || {
-                log_error "Failed to fetch from origin in $target_dir"
-                cd - >/dev/null; return 1
-            }
-            git checkout "$branch" >>"$LOG_FILE" 2>&1 || {
-                log_error "Failed to checkout branch $branch in $target_dir"
-                cd - >/dev/null; return 1
-            }
-            git pull origin "$branch" >>"$LOG_FILE" 2>&1 || {
-                log_error "Failed to pull $branch from origin in $target_dir"
-                cd - >/dev/null; return 1
-            }
+            git fetch origin >>"$LOG_FILE" 2>&1 || _update_ok=false
+            if [[ "$_update_ok" == "true" ]]; then
+                git checkout "$branch" >>"$LOG_FILE" 2>&1 || _update_ok=false
+            fi
+            if [[ "$_update_ok" == "true" ]]; then
+                # PR refs (pr/N) and some SHA-pinned refs cannot be pulled;
+                # a non-zero exit here is non-fatal — checkout already has the ref.
+                git pull origin "$branch" >>"$LOG_FILE" 2>&1 || true
+            fi
         else
-            git pull >>"$LOG_FILE" 2>&1 || {
-                log_error "Failed to pull latest changes in $target_dir"
-                cd - >/dev/null; return 1
-            }
+            git pull >>"$LOG_FILE" 2>&1 || _update_ok=false
         fi
         cd - >/dev/null
-    else
+
+        if [[ "$_update_ok" == "false" ]]; then
+            # Update failed — discard stale clone and fall through to a fresh clone
+            log_file_only "Update failed for $target_dir — re-cloning from $repo_url"
+            rm -rf "$target_dir"
+        fi
+    fi
+
+    if [[ ! -d "$target_dir" ]]; then
         if ! git clone "$repo_url" "$target_dir" >>"$LOG_FILE" 2>&1; then
             log_error "Failed to clone $(basename "$target_dir") from $repo_url"
             return 1

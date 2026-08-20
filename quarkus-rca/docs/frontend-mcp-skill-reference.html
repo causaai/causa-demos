@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Frontend — MCP & Skill Configuration Reference</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.6;
+    color: #1f2328;
+    background: #ffffff;
+    padding: 32px 24px 48px;
+    max-width: 960px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 4px;
+    color: #1f2328;
+  }
+  .subtitle {
+    font-size: 13px;
+    color: #57606a;
+    margin-bottom: 28px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  thead tr {
+    background: #f7f8fa;
+    border-bottom: 2px solid #e5e7eb;
+  }
+  thead th {
+    text-align: left;
+    padding: 10px 14px;
+    font-weight: 600;
+    color: #1f2328;
+    white-space: nowrap;
+  }
+  tbody tr {
+    border-bottom: 1px solid #e5e7eb;
+  }
+  tbody tr:last-child {
+    border-bottom: none;
+  }
+  tbody tr:hover {
+    background: #f7f8fa;
+  }
+  td {
+    padding: 10px 14px;
+    vertical-align: top;
+  }
+  .name {
+    font-weight: 600;
+    white-space: nowrap;
+    color: #1f2328;
+  }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .badge-yes    { background: #dcfce7; color: #166534; }
+  .badge-no     { background: #fee2e2; color: #991b1b; }
+  .badge-partial{ background: #fef9c3; color: #854d0e; }
+  .badge-implemented { background: #dbeafe; color: #1e40af; }
+  .path {
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 11.5px;
+    color: #24292f;
+    background: #f6f8fa;
+    border: 1px solid #e5e7eb;
+    border-radius: 4px;
+    padding: 1px 5px;
+    display: inline-block;
+    word-break: break-all;
+  }
+  .note {
+    font-size: 12px;
+    color: #57606a;
+    margin-top: 3px;
+  }
+  .section-header td {
+    background: #f7f8fa;
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #57606a;
+    padding: 6px 14px;
+    border-bottom: 1px solid #e5e7eb;
+  }
+  .legend {
+    margin-top: 24px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    font-size: 12px;
+    color: #57606a;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  footer {
+    margin-top: 40px;
+    padding-top: 16px;
+    border-top: 1px solid #e5e7eb;
+    text-align: center;
+    font-size: 12px;
+    color: #57606a;
+  }
+</style>
+</head>
+<body>
+
+<h1>AI Frontend — MCP &amp; Skill Configuration Reference</h1>
+<p class="subtitle">Config file paths for MCP server registration and skill / context injection. macOS paths shown unless noted.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Frontend</th>
+      <th>Both MCP + Skill?</th>
+      <th>MCP Server Config Location</th>
+      <th>Skill / Context Location</th>
+    </tr>
+  </thead>
+  <tbody>
+
+    <!-- Currently implemented -->
+    <tr class="section-header"><td colspan="4">Currently implemented in demo.sh</td></tr>
+
+    <tr>
+      <td class="name">Bob IDE</td>
+      <td><span class="badge badge-yes">✓ Both</span> <span class="badge badge-implemented">Implemented</span></td>
+      <td>
+        <span class="path">~/.bob/settings/mcp.json</span>
+        <div class="note">Key: <span class="path">mcpServers</span>, type: <span class="path">http</span></div>
+      </td>
+      <td>
+        <span class="path">~/.bob/skills/causa-rca/SKILL.md</span>
+        <div class="note">Auto-discovered by Bob at startup</div>
+      </td>
+    </tr>
+
+    <tr>
+      <td class="name">Claude Desktop</td>
+      <td><span class="badge badge-partial">MCP only</span> <span class="badge badge-implemented">Implemented</span></td>
+      <td>
+        <span class="path">~/Library/Application Support/Claude/claude_desktop_config.json</span>
+        <div class="note">Linux: <span class="path">~/.config/Claude/claude_desktop_config.json</span></div>
+      </td>
+      <td>
+        <span class="badge badge-no">✗ Not supported</span>
+        <div class="note">No file-based system prompt injection; use Projects in UI or paste manually</div>
+      </td>
+    </tr>
+
+    <tr>
+      <td class="name">Claude Shell<br><span style="font-weight:400;font-size:12px;color:#57606a;">claude CLI</span></td>
+      <td><span class="badge badge-yes">✓ Both</span> <span class="badge badge-implemented">Implemented</span></td>
+      <td>
+        <span class="path">~/.claude.json</span>
+        <div class="note">Top-level <span class="path">mcpServers</span> key; scope: user</div>
+      </td>
+      <td>
+        <span class="path">~/.claude/CLAUDE.md</span>
+        <div class="note">Loaded as user-level system prompt for every session</div>
+      </td>
+    </tr>
+
+    <!-- Not yet implemented -->
+    <tr class="section-header"><td colspan="4">Not yet implemented — candidates to add</td></tr>
+
+    <tr>
+      <td class="name">Cursor</td>
+      <td><span class="badge badge-yes">✓ Both</span></td>
+      <td>
+        <span class="path">~/.cursor/mcp.json</span> (global)<br>
+        <span class="path">.cursor/mcp.json</span> (project)
+        <div class="note">Key: <span class="path">mcpServers</span>, same JSON shape as Claude Desktop</div>
+      </td>
+      <td>
+        <span class="path">~/.cursor/rules</span> (global)<br>
+        <span class="path">.cursor/rules</span> (project)
+        <div class="note">Markdown rules file; loaded automatically as AI context</div>
+      </td>
+    </tr>
+
+    <tr>
+      <td class="name">VS Code + Copilot</td>
+      <td><span class="badge badge-yes">✓ Both</span></td>
+      <td>
+        <span class="path">.vscode/mcp.json</span> (workspace)
+        <div class="note">Or via <span class="path">settings.json</span> key <span class="path">mcp.servers</span></div>
+      </td>
+      <td>
+        <span class="path">.github/copilot-instructions.md</span>
+        <div class="note">Repo-level; auto-loaded by Copilot Chat as persistent instructions</div>
+      </td>
+    </tr>
+
+    <tr>
+      <td class="name">Windsurf</td>
+      <td><span class="badge badge-yes">✓ Both</span></td>
+      <td>
+        <span class="path">~/.codeium/windsurf/mcp_config.json</span>
+        <div class="note">Key: <span class="path">mcpServers</span></div>
+      </td>
+      <td>
+        <span class="path">~/.windsurfrules</span> (global)<br>
+        <span class="path">.windsurfrules</span> (project)
+        <div class="note">Loaded as persistent AI instructions</div>
+      </td>
+    </tr>
+
+    <tr>
+      <td class="name">Gemini CLI</td>
+      <td><span class="badge badge-yes">✓ Both</span></td>
+      <td>
+        <span class="path">~/.gemini/settings.json</span>
+        <div class="note">Key: <span class="path">mcpServers</span>, same pattern as Claude shell</div>
+      </td>
+      <td>
+        <span class="path">~/.gemini/GEMINI.md</span> (global)<br>
+        <span class="path">GEMINI.md</span> (project)
+        <div class="note">Loaded as system context per session</div>
+      </td>
+    </tr>
+
+    <tr>
+      <td class="name">Continue.dev</td>
+      <td><span class="badge badge-yes">✓ Both</span></td>
+      <td>
+        <span class="path">~/.continue/config.yaml</span>
+        <div class="note">Key: <span class="path">mcpServers</span> (YAML format)</div>
+      </td>
+      <td>
+        <span class="path">~/.continue/rules/</span>
+        <div class="note">Markdown files in rules dir; auto-loaded as context</div>
+      </td>
+    </tr>
+
+    <tr>
+      <td class="name">Zed</td>
+      <td><span class="badge badge-partial">MCP only</span></td>
+      <td>
+        <span class="path">~/.config/zed/settings.json</span>
+        <div class="note">Key: <span class="path">context_servers</span></div>
+      </td>
+      <td>
+        <span class="badge badge-no">✗ Not supported</span>
+        <div class="note">No persistent skill/rules file; instructions per-thread only</div>
+      </td>
+    </tr>
+
+    <tr>
+      <td class="name">Cline<br><span style="font-weight:400;font-size:12px;color:#57606a;">VS Code ext</span></td>
+      <td><span class="badge badge-partial">MCP only</span></td>
+      <td>
+        Managed via VS Code settings UI
+        <div class="note">No stable writable file path; config stored in VS Code extension state</div>
+      </td>
+      <td>
+        <span class="badge badge-no">✗ Not supported</span>
+        <div class="note">No file-based persistent instructions</div>
+      </td>
+    </tr>
+
+  </tbody>
+</table>
+
+<div class="legend">
+  <div class="legend-item"><span class="badge badge-yes">✓ Both</span> MCP registration + skill/context injection both automatable</div>
+  <div class="legend-item"><span class="badge badge-partial">MCP only</span> Only MCP registration is automatable from a script</div>
+  <div class="legend-item"><span class="badge badge-no">✗ Not supported</span> No file-based mechanism exists</div>
+  <div class="legend-item"><span class="badge badge-implemented">Implemented</span> Already wired into demo.sh</div>
+</div>
+
+<footer>Made with IBM Bob</footer>
+</body>
+</html>

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "causa-rca": {
+      "type": "http",
+      "url": "http://localhost:30005/mcp"
+    }
+  }
+}

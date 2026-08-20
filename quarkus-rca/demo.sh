@@ -14,11 +14,14 @@
 #   Step 3 — Sources llm.env, creates credentials Secret, and pushes
 #             LLM config to Causa via POST /api/v1/configs
 #
-#   Step 4 — Writes the Causa MCP entry to ~/.bob/settings/mcp.json
-#             and copies the causa-rca SKILL.md into ~/.bob/skills/
+#   Step 4 — Writes .mcp.json to the repo root (cross-IDE MCP standard;
+#             auto-loaded by Claude shell, Cursor, Windsurf, VS Code Copilot,
+#             Gemini CLI and others — no per-user setup required).
+#             Optionally copies the causa-rca skill to ~/.bob/skills/ (bob)
+#             or appends it to ~/.claude/CLAUDE.md (claude-shell) when
+#             --frontend is set.
 #
 #   Step 5 — Prints a ready prompt with container/namespace/pod info
-#             for the user to paste into Bob IDE
 #
 # Usage:  ./demo.sh [OPTIONS]
 # Run with -h for full option list.
@@ -99,15 +102,13 @@ INSTALLER_URL="${INSTALLER_URL:-https://github.com/causaai/installer}"
 INSTALLER_BRANCH="${INSTALLER_BRANCH:-mvp_demo}"
 
 # ---------------------------------------------------------------------------
-# Frontend Assistant configs (Bob IDE, Claude Desktop, etc.)
+# Frontend Assistant skill configs (Bob IDE, Claude Shell)
 # ---------------------------------------------------------------------------
-BOB_MCP_CONFIG="${HOME}/.bob/settings/mcp.json"
-CLAUDE_MCP_CONFIG_MAC="${HOME}/Library/Application Support/Claude/claude_desktop_config.json"
-CLAUDE_MCP_CONFIG_LINUX="${HOME}/.config/Claude/claude_desktop_config.json"
-CLAUDE_MCP_CONFIG="${CLAUDE_MCP_CONFIG_MAC}"
-if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    CLAUDE_MCP_CONFIG="${CLAUDE_MCP_CONFIG_LINUX}"
-fi
+# MCP server registration is handled project-wide via .mcp.json (see Step 4).
+# --frontend only controls where the causa-rca skill/instructions are written.
+BOB_SKILL_DIR="${HOME}/.bob/skills/causa-rca"
+BOB_SKILL_FILE="${BOB_SKILL_DIR}/SKILL.md"
+CLAUDE_SHELL_CLAUDE_MD="${HOME}/.claude/CLAUDE.md"
 
 # Causa MCP Server is on NodePort 30005 (see installer manifests/causa_mcp/deployment.yaml)
 CAUSA_MCP_URL="http://localhost:30005"
@@ -125,8 +126,12 @@ show_help() {
     echo "    --target TARGET          Target platform: kind, openshift, vm, etc. (default: kind)"
     echo "                             Passed directly to installer install.sh --target <TARGET>."
     echo "    -n namespace             Namespace for the RCA stack and workload (default: causa-rca)"
-    echo "    --frontend FRONTEND      Frontend assistant to configure for RCA chat (e.g. bob, claude)"
-    echo "                             Supported: bob, claude, all, none (default: none / not set)"
+    echo "    --frontend FRONTEND      Frontend assistant to write the causa-rca skill for (bob, claude-shell, all, none)"
+    echo "                             MCP server is always registered via project-level .mcp.json regardless."
+    echo "                             bob:          copies SKILL.md to ~/.bob/skills/causa-rca/"
+    echo "                             claude-shell: appends skill instructions to ~/.claude/CLAUDE.md"
+    echo "                             all:          both of the above"
+    echo "                             none:         skip skill writing (default)"
     echo "    -t                       Terminate mode: clean up all resources"
     echo "    --skip-installer         Skip running install.sh (use when stack is already deployed)"
     echo "    --installer-url URL      Git URL of the installer repo"
@@ -139,12 +144,14 @@ show_help() {
     echo "                               Default: main"
     echo "    -h                       Show this help message"
     echo ""
-    echo "Backend RCA LLM vs Frontend Chat Assistant:"
-    echo "    Backend RCA LLM is configured via llm.env / environment:"
+    echo "MCP server registration:"
+    echo "    .mcp.json is written to the repo root on every run. Any IDE that supports the"
+    echo "    cross-IDE MCP standard (Claude shell, Cursor, Windsurf, VS Code Copilot, Gemini CLI)"
+    echo "    auto-loads it — no per-user or per-IDE setup required."
+    echo ""
+    echo "Backend RCA LLM:"
+    echo "    Configured via llm.env / environment:"
     echo "        LLM_PROVIDER=vertex-ai-anthropic | anthropic | bob | openai | bedrock | ..."
-    echo "    Frontend Assistant (chatting with RCA tools):"
-    echo "        Bob IDE: registers Causa MCP in ~/.bob/settings/mcp.json + copies causa-rca SKILL.md"
-    echo "        Claude Desktop: registers Causa MCP in claude_desktop_config.json"
     echo ""
     echo "Installer repo / branch:"
     echo "    The installer is cloned from INSTALLER_URL at INSTALLER_BRANCH."
@@ -164,9 +171,10 @@ show_help() {
     echo "    $0 --target openshift -n my-rca"
     echo "    $0 --target vm"
     echo ""
-    echo "    # Custom frontend chat assistant"
-    echo "    $0 --frontend claude"
+    echo "    # Write skill for a specific frontend"
+    echo "    $0 --frontend claude-shell"
     echo "    $0 --frontend bob"
+    echo "    $0 --frontend all"
     echo ""
     echo "    # Custom namespace"
     echo "    $0 -n my-rca"
@@ -279,12 +287,13 @@ fi
 if [[ "$TERMINATE" == "true" ]]; then
     terminate_demo "$NAMESPACE" "$DEMO_DIR" "$SKIP_INSTALLER"
 
-    # Remove Causa MCP entry from Bob mcp.json
-    if [[ -f "$BOB_MCP_CONFIG" ]]; then
-        start_spinner "Removing Causa MCP from Bob IDE config..."
-        _remove_rc=1
+    # Remove causa-rca from project-level .mcp.json
+    _MCP_JSON_PATH="${SCRIPT_DIR}/../.mcp.json"
+    if [[ -f "$_MCP_JSON_PATH" ]]; then
+        start_spinner "Removing Causa MCP from project .mcp.json..."
+        _remove_mcp_json_rc=1
         if command_exists python3; then
-            python3 - "$BOB_MCP_CONFIG" << 'PYEOF'
+            python3 - "$_MCP_JSON_PATH" << 'PYEOF'
 import json, sys
 path = sys.argv[1]
 try:
@@ -293,43 +302,17 @@ try:
     cfg.get("mcpServers", {}).pop("causa-rca", None)
     with open(path, "w") as f:
         json.dump(cfg, f, indent=2)
+        f.write("\n")
     print("removed")
 except Exception as e:
     print(f"warn: {e}", file=sys.stderr)
     sys.exit(1)
 PYEOF
-            _remove_rc=$?
+            _remove_mcp_json_rc=$?
         fi
         stop_spinner
-        if [[ $_remove_rc -eq 0 ]]; then
-            log_install_success "Causa MCP removed from Bob IDE config"
-        fi
-    fi
-
-    # Remove Causa MCP entry from Claude config
-    if [[ -f "$CLAUDE_MCP_CONFIG" ]]; then
-        start_spinner "Removing Causa MCP from Claude Desktop config..."
-        _remove_claude_rc=1
-        if command_exists python3; then
-            python3 - "$CLAUDE_MCP_CONFIG" << 'PYEOF'
-import json, sys
-path = sys.argv[1]
-try:
-    with open(path) as f:
-        cfg = json.load(f)
-    cfg.get("mcpServers", {}).pop("causa-rca", None)
-    with open(path, "w") as f:
-        json.dump(cfg, f, indent=2)
-    print("removed")
-except Exception as e:
-    print(f"warn: {e}", file=sys.stderr)
-    sys.exit(1)
-PYEOF
-            _remove_claude_rc=$?
-        fi
-        stop_spinner
-        if [[ $_remove_claude_rc -eq 0 ]]; then
-            log_install_success "Causa MCP removed from Claude Desktop config"
+        if [[ $_remove_mcp_json_rc -eq 0 ]]; then
+            log_install_success "Causa MCP removed from project .mcp.json"
         fi
     fi
 
@@ -705,28 +688,21 @@ else
 fi
 
 # ===========================================================================
-# Step 4: Register Causa MCP in Frontend Assistant(s) (Bob IDE, Claude Desktop, etc.)
+# Step 4: Register Causa MCP — project .mcp.json + Frontend Assistant(s)
 # ===========================================================================
-if [[ -z "$FRONTEND_ASSISTANT" || "$FRONTEND_ASSISTANT" == "none" ]]; then
-    log_section "Step 4: Frontend Assistant Configuration (Skipped)"
-    write_to_log_file "INFO" "Frontend assistant is not set — skipping automatic MCP client configuration"
-    {
-        echo -e "${COLOR_YELLOW}Frontend assistant is not set, so skipping automatic MCP client configuration.${COLOR_RESET}"
-        echo -e "To configure automatically, set ${COLOR_BOLD}FRONTEND_ASSISTANT=bob|claude${COLOR_RESET} in llm.env or pass ${COLOR_BOLD}--frontend bob|claude${COLOR_RESET} as a CLI argument."
-        echo ""
-    } >/dev/tty 2>/dev/null || true
-    log_validation_success "Frontend assistant config (skipped — not set)"
-else
-    log_section "Step 4: Registering Causa MCP in Frontend Assistant ($FRONTEND_ASSISTANT)"
 
-    # ── 4a: Register in Bob IDE (if FRONTEND_ASSISTANT is bob or all) ─────────
-    if [[ "$FRONTEND_ASSISTANT" == "bob" || "$FRONTEND_ASSISTANT" == "all" ]]; then
-        start_spinner "Writing Causa MCP entry to ~/.bob/settings/mcp.json..."
-        _bob_mcp_dir="$(dirname "$BOB_MCP_CONFIG")"
-        mkdir -p "$_bob_mcp_dir"
-
-        if command_exists python3; then
-            python3 - "$BOB_MCP_CONFIG" "$CAUSA_MCP_URL" << 'PYEOF'
+# ── 4.0: Always write .mcp.json to the repo root ─────────────────────────
+# .mcp.json is the cross-IDE project-level MCP standard. Any IDE that
+# supports MCP (Claude shell, Cursor, Windsurf, VS Code Copilot, Gemini CLI)
+# auto-loads this file when the developer opens or cd's into the project —
+# no per-user setup required. Committed to the repo so every developer on
+# every machine gets it automatically.
+_MCP_JSON_PATH="${SCRIPT_DIR}/../.mcp.json"
+log_section "Step 4: Writing project-level .mcp.json"
+start_spinner "Writing .mcp.json to repo root..."
+_mcp_json_rc=1
+if command_exists python3; then
+    python3 - "$_MCP_JSON_PATH" "$CAUSA_MCP_URL" << 'PYEOF'
 import json, sys, os
 path, url = sys.argv[1], sys.argv[2]
 cfg = {}
@@ -738,47 +714,40 @@ if os.path.isfile(path):
         cfg = {}
 cfg.setdefault("mcpServers", {})["causa-rca"] = {
     "type": "http",
-    "url": url + "/mcp",
-    "description": "Causa RCA — root cause analysis for Quarkus/Java apps"
+    "url": url + "/mcp"
 }
 with open(path, "w") as f:
     json.dump(cfg, f, indent=2)
+    f.write("\n")
 print("ok")
 PYEOF
-            _reg_rc=$?
-        elif command_exists jq; then
-            _jq_input="{}"
-            [[ -f "$BOB_MCP_CONFIG" ]] && _jq_input=$(cat "$BOB_MCP_CONFIG")
-            printf '%s' "$_jq_input" \
-                | jq --arg url "$CAUSA_MCP_URL/mcp" \
-                  '.mcpServers["causa-rca"] = {"type":"http","url":$url,"description":"Causa RCA — root cause analysis for Quarkus/Java apps"}' \
-                > "${BOB_MCP_CONFIG}.tmp" \
-                && mv "${BOB_MCP_CONFIG}.tmp" "$BOB_MCP_CONFIG"
-            _reg_rc=$?
-        else
-            if [[ ! -f "$BOB_MCP_CONFIG" ]]; then
-                printf '{"mcpServers":{"causa-rca":{"type":"http","url":"%s/mcp","description":"Causa RCA"}}}\n' \
-                    "$CAUSA_MCP_URL" > "$BOB_MCP_CONFIG"
-                _reg_rc=$?
-            else
-                write_to_log_file "WARN" \
-                    "python3 and jq not found — existing $BOB_MCP_CONFIG not updated; add causa-rca entry manually"
-                _reg_rc=1
-            fi
-        fi
+    _mcp_json_rc=$?
+fi
+stop_spinner
+if [[ $_mcp_json_rc -eq 0 ]]; then
+    log_install_success ".mcp.json written (${_MCP_JSON_PATH})"
+    write_to_log_file "INFO" ".mcp.json path: $_MCP_JSON_PATH"
+else
+    log_file_only "Failed to write .mcp.json — add manually"
+    log_validation_success ".mcp.json (failed — add manually)"
+fi
 
-        stop_spinner
-        if [[ $_reg_rc -eq 0 ]]; then
-            log_install_success "Causa MCP registered in Bob IDE ($CAUSA_MCP_URL/mcp)"
-            write_to_log_file "INFO" "Bob MCP config: $BOB_MCP_CONFIG"
-        else
-            log_file_only "Bob MCP config update failed — add manually (see below)"
-            log_validation_success "Bob IDE config (failed — add manually)"
-        fi
+# ── Per-frontend skill config (optional, controlled by --frontend) ────────
+# MCP is already handled above via .mcp.json. This section only writes the
+# causa-rca skill/instructions file to the appropriate location for each IDE.
+if [[ -z "$FRONTEND_ASSISTANT" || "$FRONTEND_ASSISTANT" == "none" ]]; then
+    log_section "Step 4: Skill Configuration (Skipped)"
+    write_to_log_file "INFO" "Frontend assistant not set — skipping skill configuration"
+    {
+        echo -e "${COLOR_YELLOW}Skill configuration skipped. Pass ${COLOR_BOLD}--frontend bob|claude-shell|all${COLOR_RESET} to also write the causa-rca skill.${COLOR_RESET}"
+        echo ""
+    } >/dev/tty 2>/dev/null || true
+    log_validation_success "Skill config (skipped — not set)"
+else
+    log_section "Step 4: Writing causa-rca skill for $FRONTEND_ASSISTANT"
 
-        # Copy causa-rca SKILL.md to ~/.bob/skills/
-        BOB_SKILL_DIR="${HOME}/.bob/skills/causa-rca"
-        BOB_SKILL_FILE="${BOB_SKILL_DIR}/SKILL.md"
+    # ── 4a: Bob IDE — copy SKILL.md to ~/.bob/skills/causa-rca/ ──────────────
+    if [[ "$FRONTEND_ASSISTANT" == "bob" || "$FRONTEND_ASSISTANT" == "all" ]]; then
         REPO_SKILL_FILE="${SCRIPT_DIR}/../.bob/skills/causa-rca/SKILL.md"
 
         start_spinner "Copying causa-rca SKILL.md to Bob IDE..."
@@ -813,43 +782,70 @@ SKILL_EOF
         fi
     fi
 
-    # ── 4b: Register in Claude Desktop (if FRONTEND_ASSISTANT is claude or all) ─
-    if [[ "$FRONTEND_ASSISTANT" == "claude" || "$FRONTEND_ASSISTANT" == "all" ]]; then
-        start_spinner "Writing Causa MCP entry to Claude Desktop config..."
-        _claude_mcp_dir="$(dirname "$CLAUDE_MCP_CONFIG")"
-        mkdir -p "$_claude_mcp_dir"
+    # ── 4b: Claude shell — append skill instructions to ~/.claude/CLAUDE.md ──
+    if [[ "$FRONTEND_ASSISTANT" == "claude-shell" || "$FRONTEND_ASSISTANT" == "all" ]]; then
+        REPO_SKILL_FILE="${SCRIPT_DIR}/../.bob/skills/causa-rca/SKILL.md"
+        start_spinner "Appending causa-rca skill to Claude shell CLAUDE.md..."
+        mkdir -p "$(dirname "$CLAUDE_SHELL_CLAUDE_MD")"
 
-        _claude_reg_rc=1
-        if command_exists python3; then
-            python3 - "$CLAUDE_MCP_CONFIG" "$CAUSA_MCP_URL" << 'PYEOF'
-import json, sys, os
-path, url = sys.argv[1], sys.argv[2]
-cfg = {}
-if os.path.isfile(path):
-    try:
-        with open(path) as f:
-            cfg = json.load(f)
-    except json.JSONDecodeError:
-        cfg = {}
-# Claude Desktop format uses command/url or sse/http depending on version
-# For SSE / HTTP MCP servers:
-cfg.setdefault("mcpServers", {})["causa-rca"] = {
-    "url": url + "/mcp",
-    "type": "http"
-}
-with open(path, "w") as f:
-    json.dump(cfg, f, indent=2)
-print("ok")
+        _skill_content=""
+        if [[ -f "$REPO_SKILL_FILE" ]]; then
+            # Strip YAML front-matter (--- ... ---) from the skill file before appending
+            _skill_content=$(python3 - "$REPO_SKILL_FILE" << 'PYEOF'
+import sys, re
+with open(sys.argv[1]) as f:
+    content = f.read()
+# Strip YAML front-matter block if present
+content = re.sub(r'^---\n.*?\n---\n', '', content, count=1, flags=re.DOTALL)
+print(content.strip())
 PYEOF
-            _claude_reg_rc=$?
-        fi
-        stop_spinner
-        if [[ $_claude_reg_rc -eq 0 ]]; then
-            log_install_success "Causa MCP registered in Claude Desktop config"
-            write_to_log_file "INFO" "Claude MCP config: $CLAUDE_MCP_CONFIG"
+)
         else
-            log_file_only "Claude MCP config not written (non-fatal)"
-            log_validation_success "Claude Desktop config (skipped or manual configuration required)"
+            _skill_content="# Causa RCA Skill
+
+Use tools initiate_rca, get_rca_status, and get_rca_result from the Causa MCP server (causa-rca).
+Check for existing diagnostics before starting a new RCA. Poll get_rca_status until COMPLETED,
+then present root cause and fix from get_rca_result."
+        fi
+
+        # Append under a clearly marked section so it can be found and removed on -t
+        _SKILL_MARKER="## Causa RCA Skill (added by demo.sh)"
+        {
+            if [[ -f "$CLAUDE_SHELL_CLAUDE_MD" ]] && grep -qF "$_SKILL_MARKER" "$CLAUDE_SHELL_CLAUDE_MD" 2>/dev/null; then
+                # Already present — replace the section using python3
+                python3 - "$CLAUDE_SHELL_CLAUDE_MD" "$_SKILL_MARKER" "$_skill_content" << 'PYEOF'
+import sys
+path, marker, content = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as f:
+    text = f.read()
+# Replace from marker to next top-level section or end of file
+import re
+pattern = re.escape(marker) + r'.*?(?=\n## |\Z)'
+replacement = marker + "\n\n" + content
+text = re.sub(pattern, replacement, text, count=1, flags=re.DOTALL)
+with open(path, "w") as f:
+    f.write(text)
+print("updated")
+PYEOF
+            else
+                # Not present — append
+                {
+                    [[ -f "$CLAUDE_SHELL_CLAUDE_MD" ]] && echo ""
+                    echo "$_SKILL_MARKER"
+                    echo ""
+                    echo "$_skill_content"
+                } >> "$CLAUDE_SHELL_CLAUDE_MD"
+            fi
+        }
+        _skill_md_rc=$?
+
+        stop_spinner
+        if [[ $_skill_md_rc -eq 0 ]]; then
+            log_install_success "causa-rca skill appended to Claude shell CLAUDE.md"
+            write_to_log_file "INFO" "Claude shell CLAUDE.md: $CLAUDE_SHELL_CLAUDE_MD"
+        else
+            log_file_only "Failed to update CLAUDE.md (non-fatal)"
+            log_validation_success "Claude shell CLAUDE.md (failed — add skill manually)"
         fi
     fi
 fi
@@ -883,12 +879,12 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
 {
     echo ""
     echo -e "${COLOR_CYAN}${COLOR_BOLD}========================================${COLOR_RESET}"
-    if [[ "$FRONTEND_ASSISTANT" == "claude" ]]; then
-        echo -e "${COLOR_BOLD_GREEN}  Demo is ready. Switch to Claude Desktop now.${COLOR_RESET}"
+    if [[ "$FRONTEND_ASSISTANT" == "claude-shell" ]]; then
+        echo -e "${COLOR_BOLD_GREEN}  Demo is ready. Open a terminal and run: claude${COLOR_RESET}"
     elif [[ "$FRONTEND_ASSISTANT" == "bob" ]]; then
         echo -e "${COLOR_BOLD_GREEN}  Demo is ready. Switch to Bob IDE now.${COLOR_RESET}"
     else
-        echo -e "${COLOR_BOLD_GREEN}  Demo is ready. Connect your AI assistant to Causa MCP.${COLOR_RESET}"
+        echo -e "${COLOR_BOLD_GREEN}  Demo is ready. Open your AI assistant — Causa MCP is configured via .mcp.json${COLOR_RESET}"
     fi
     echo -e "${COLOR_CYAN}${COLOR_BOLD}========================================${COLOR_RESET}"
     echo ""
@@ -906,7 +902,13 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
     echo -e "  Namespace:  ${COLOR_BOLD}${NAMESPACE}${COLOR_RESET}"
     echo -e "  Pod:        ${COLOR_BOLD}${_POD_DISPLAY}${COLOR_RESET}"
     echo ""
-    echo -e "${COLOR_BOLD_YELLOW}Type this in Bob IDE chat:${COLOR_RESET}"
+    if [[ "$FRONTEND_ASSISTANT" == "claude-shell" ]]; then
+        echo -e "${COLOR_BOLD_YELLOW}Type this in the claude shell (claude CLI):${COLOR_RESET}"
+    elif [[ "$FRONTEND_ASSISTANT" == "bob" ]]; then
+        echo -e "${COLOR_BOLD_YELLOW}Type this in Bob IDE chat:${COLOR_RESET}"
+    else
+        echo -e "${COLOR_BOLD_YELLOW}Type this in your AI assistant:${COLOR_RESET}"
+    fi
     echo ""
     echo -e "  ${COLOR_BOLD}Prompt 1 — investigate any active failure:${COLOR_RESET}"
     echo -e "  ${COLOR_BOLD}Use the causa-rca skill to investigate why my quarkus-perf app is unhealthy."
@@ -928,26 +930,31 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
     echo -e "  App: ${WORKLOAD_APP_NAME}, namespace: ${NAMESPACE}, container: ${WORKLOAD_CONTAINER_NAME}, pod: ${_POD_DISPLAY}."
     echo -e "  Check for memory issues, use existing diagnostics if present, otherwise run a fresh RCA, and show the fix.${COLOR_RESET}"
     echo ""
-    echo -e "${COLOR_CYAN}What Bob will do:${COLOR_RESET}"
-    echo -e "  1. Use the causa-rca skill flow from ${BOB_SKILL_FILE}"
+    if [[ "$FRONTEND_ASSISTANT" == "claude-shell" ]]; then
+        echo -e "${COLOR_CYAN}What claude shell will do:${COLOR_RESET}"
+        echo -e "  1. Read causa-rca skill instructions from ${CLAUDE_SHELL_CLAUDE_MD}"
+    elif [[ "$FRONTEND_ASSISTANT" == "bob" || "$FRONTEND_ASSISTANT" == "all" ]]; then
+        echo -e "${COLOR_CYAN}What Bob will do:${COLOR_RESET}"
+        echo -e "  1. Use the causa-rca skill flow from ${BOB_SKILL_FILE}"
+    else
+        echo -e "${COLOR_CYAN}Your AI assistant will:${COLOR_RESET}"
+        echo -e "  1. Use the Causa MCP tools from .mcp.json"
+    fi
     echo -e "  2. Check existing diagnostics before starting a duplicate RCA"
     echo -e "  3. Initiate RCA for ${WORKLOAD_APP_NAME} in namespace ${NAMESPACE} when needed"
     echo -e "  4. Poll until COMPLETED, then present root cause + fix"
     echo ""
-    echo -e "${COLOR_CYAN}Note:${COLOR_RESET} You can prompt Bob immediately — no need to wait for an OOMKill."
+    echo -e "${COLOR_CYAN}Note:${COLOR_RESET} You can prompt immediately — no need to wait for an OOMKill."
     echo -e "  Watch pod restarts: ${COLOR_BOLD}kubectl get pods -n ${NAMESPACE} -w${COLOR_RESET}"
     echo ""
     echo -e "${COLOR_CYAN}Causa Backend:${COLOR_RESET} ${CAUSA_BACKEND_URL}/api/v1/diagnostics"
     echo -e "${COLOR_CYAN}Causa MCP:${COLOR_RESET}     ${CAUSA_MCP_URL}/mcp"
+    echo -e "${COLOR_CYAN}Project MCP config:${COLOR_RESET} ${SCRIPT_DIR}/../.mcp.json"
     if [[ "$FRONTEND_ASSISTANT" == "bob" || "$FRONTEND_ASSISTANT" == "all" ]]; then
-        echo -e "${COLOR_CYAN}Bob Skill file:${COLOR_RESET} ${BOB_SKILL_FILE:-${HOME}/.bob/skills/causa-rca/SKILL.md}"
-        echo -e "${COLOR_CYAN}Bob MCP config:${COLOR_RESET} ${BOB_MCP_CONFIG}"
+        echo -e "${COLOR_CYAN}Bob Skill file:${COLOR_RESET} ${BOB_SKILL_FILE}"
     fi
-    if [[ "$FRONTEND_ASSISTANT" == "claude" || "$FRONTEND_ASSISTANT" == "all" ]]; then
-        echo -e "${COLOR_CYAN}Claude config:${COLOR_RESET}  ${CLAUDE_MCP_CONFIG}"
-    fi
-    if [[ -z "$FRONTEND_ASSISTANT" || "$FRONTEND_ASSISTANT" == "none" ]]; then
-        echo -e "${COLOR_CYAN}Frontend Assistant:${COLOR_RESET} Not configured (add ${CAUSA_MCP_URL}/mcp to your MCP client)"
+    if [[ "$FRONTEND_ASSISTANT" == "claude-shell" || "$FRONTEND_ASSISTANT" == "all" ]]; then
+        echo -e "${COLOR_CYAN}Claude shell CLAUDE.md:${COLOR_RESET} ${CLAUDE_SHELL_CLAUDE_MD}"
     fi
     echo ""
 } >/dev/tty 2>/dev/null || true
