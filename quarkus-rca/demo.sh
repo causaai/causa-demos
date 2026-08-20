@@ -17,11 +17,10 @@
 #   Step 4 — Writes .mcp.json to the repo root (cross-IDE MCP standard;
 #             auto-loaded by Claude shell, Cursor, Windsurf, VS Code Copilot,
 #             Gemini CLI and others — no per-user setup required).
-#             Optionally copies the causa-rca skill to ~/.bob/skills/ (bob)
-#             or appends it to ~/.claude/CLAUDE.md (claude-shell) when
-#             --frontend is set.
+#             Optionally installs the causa-rca SKILL.md to a user-supplied
+#             path via --skill-path <dir>.
 #
-#   Step 5 — Prints a ready prompt with container/namespace/pod info
+#   Step 5 — Prints ready prompts and skill setup instructions
 #
 # Usage:  ./demo.sh [OPTIONS]
 # Run with -h for full option list.
@@ -72,8 +71,7 @@ trap '_demo_exit_trap' INT TERM
 # ---------------------------------------------------------------------------
 NAMESPACE="causa-rca"
 TARGET="${TARGET:-kind}"
-FRONTEND_ASSISTANT=""
-CLI_FRONTEND_SET=false
+SKILL_PATH=""
 TERMINATE=false
 SKIP_INSTALLER=false
 DEMO_DIR="$SCRIPT_DIR/artifacts"
@@ -101,15 +99,6 @@ INSTALLER_NAME="installer"
 INSTALLER_URL="${INSTALLER_URL:-https://github.com/causaai/installer}"
 INSTALLER_BRANCH="${INSTALLER_BRANCH:-mvp_demo}"
 
-# ---------------------------------------------------------------------------
-# Frontend Assistant skill configs (Bob IDE, Claude Shell)
-# ---------------------------------------------------------------------------
-# MCP server registration is handled project-wide via .mcp.json (see Step 4).
-# --frontend only controls where the causa-rca skill/instructions are written.
-BOB_SKILL_DIR="${HOME}/.bob/skills/causa-rca"
-BOB_SKILL_FILE="${BOB_SKILL_DIR}/SKILL.md"
-CLAUDE_SHELL_CLAUDE_MD="${HOME}/.claude/CLAUDE.md"
-
 # Causa MCP Server is on NodePort 30005 (see installer manifests/causa_mcp/deployment.yaml)
 CAUSA_MCP_URL="http://localhost:30005"
 CAUSA_BACKEND_URL="http://localhost:30001"
@@ -120,18 +109,20 @@ CAUSA_BACKEND_URL="http://localhost:30001"
 show_help() {
     echo "Quarkus RCA Demo Script"
     echo ""
-    echo "Usage: $0 [--target TARGET] [-n namespace] [--frontend FRONTEND] [-t] [--skip-installer] [--installer-url URL] [--installer-branch BRANCH] [--chaos-lab-url URL] [--chaos-lab-branch BRANCH] [-h]"
+    echo "Usage: $0 [--target TARGET] [-n namespace] [--skill-path DIR] [-t] [--skip-installer] [--installer-url URL] [--installer-branch BRANCH] [--chaos-lab-url URL] [--chaos-lab-branch BRANCH] [-h]"
     echo ""
     echo "Options:"
     echo "    --target TARGET          Target platform: kind, openshift, vm, etc. (default: kind)"
     echo "                             Passed directly to installer install.sh --target <TARGET>."
     echo "    -n namespace             Namespace for the RCA stack and workload (default: causa-rca)"
-    echo "    --frontend FRONTEND      Frontend assistant to write the causa-rca skill for (bob, claude-shell, all, none)"
-    echo "                             MCP server is always registered via project-level .mcp.json regardless."
-    echo "                             bob:          copies SKILL.md to ~/.bob/skills/causa-rca/"
-    echo "                             claude-shell: appends skill instructions to ~/.claude/CLAUDE.md"
-    echo "                             all:          both of the above"
-    echo "                             none:         skip skill writing (default)"
+    echo "    --skill-path DIR         Directory to copy the causa-rca SKILL.md into."
+    echo "                             The script auto-detects the IDE from the path and places"
+    echo "                             the file correctly. If the path is unsupported or the copy"
+    echo "                             fails, instructions are printed at the end so you can do"
+    echo "                             it manually."
+    echo "                             Examples:"
+    echo "                               --skill-path ~/.bob/skills/causa-rca      (Bob IDE)"
+    echo "                               --skill-path ~/.claude                    (Claude shell)"
     echo "    -t                       Terminate mode: clean up all resources"
     echo "    --skip-installer         Skip running install.sh (use when stack is already deployed)"
     echo "    --installer-url URL      Git URL of the installer repo"
@@ -145,9 +136,13 @@ show_help() {
     echo "    -h                       Show this help message"
     echo ""
     echo "MCP server registration:"
-    echo "    .mcp.json is written to the repo root on every run. Any IDE that supports the"
-    echo "    cross-IDE MCP standard (Claude shell, Cursor, Windsurf, VS Code Copilot, Gemini CLI)"
-    echo "    auto-loads it — no per-user or per-IDE setup required."
+    echo "    .mcp.json is always written to the repo root. Any IDE that supports the"
+    echo "    cross-IDE MCP standard (Claude shell, Cursor, Windsurf, VS Code Copilot,"
+    echo "    Gemini CLI) auto-loads it — no per-user or per-IDE setup required."
+    echo ""
+    echo "Skill installation:"
+    echo "    Pass --skill-path <dir> to have the script copy SKILL.md to that location."
+    echo "    If omitted, the script prints manual instructions at the end instead."
     echo ""
     echo "Backend RCA LLM:"
     echo "    Configured via llm.env / environment:"
@@ -164,17 +159,18 @@ show_help() {
     echo "        ./demo.sh"
     echo ""
     echo "Examples:"
-    echo "    # Full automated demo on kind (default)"
+    echo "    # Full automated demo (MCP registered, manual skill setup printed at end)"
     echo "    $0"
+    echo ""
+    echo "    # Also install skill to Bob IDE"
+    echo "    $0 --skill-path ~/.bob/skills/causa-rca"
+    echo ""
+    echo "    # Also install skill to Claude shell"
+    echo "    $0 --skill-path ~/.claude"
     echo ""
     echo "    # Deploy to OpenShift or VM target"
     echo "    $0 --target openshift -n my-rca"
     echo "    $0 --target vm"
-    echo ""
-    echo "    # Write skill for a specific frontend"
-    echo "    $0 --frontend claude-shell"
-    echo "    $0 --frontend bob"
-    echo "    $0 --frontend all"
     echo ""
     echo "    # Custom namespace"
     echo "    $0 -n my-rca"
@@ -192,7 +188,6 @@ show_help() {
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
-_CLI_FRONTEND_ARG=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --target)
@@ -201,9 +196,9 @@ while [[ $# -gt 0 ]]; do
         -n)
             [[ -z "${2:-}" ]] && { echo "ERROR: value required for -n" >&2; exit 1; }
             NAMESPACE="$2"; shift 2 ;;
-        --frontend)
-            [[ -z "${2:-}" ]] && { echo "ERROR: value required for --frontend" >&2; exit 1; }
-            _CLI_FRONTEND_ARG="$2"; CLI_FRONTEND_SET=true; shift 2 ;;
+        --skill-path)
+            [[ -z "${2:-}" ]] && { echo "ERROR: value required for --skill-path" >&2; exit 1; }
+            SKILL_PATH="$2"; shift 2 ;;
         -t)               TERMINATE=true; shift ;;
         --skip-installer) SKIP_INSTALLER=true; shift ;;
         --installer-url)
@@ -224,7 +219,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---------------------------------------------------------------------------
-# Load llm.env early (Priority: CLI flag > llm.env > default)
+# Load llm.env early
 # ---------------------------------------------------------------------------
 _LLM_ENV_FILE="$SCRIPT_DIR/llm.env"
 if [[ -f "$_LLM_ENV_FILE" ]]; then
@@ -232,10 +227,6 @@ if [[ -f "$_LLM_ENV_FILE" ]]; then
     # shellcheck disable=SC1090
     source "$_LLM_ENV_FILE"
     set +a
-fi
-
-if [[ "$CLI_FRONTEND_SET" == "true" ]]; then
-    FRONTEND_ASSISTANT="$_CLI_FRONTEND_ARG"
 fi
 
 # ---------------------------------------------------------------------------
@@ -270,10 +261,10 @@ else
         echo -e "${COLOR_CYAN}${COLOR_BOLD}==========================================${COLOR_RESET}"
         echo ""
     } >/dev/tty 2>/dev/null || true
-    write_to_log_file "INFO" "Demo Setup — namespace: $NAMESPACE, target: $TARGET, frontend: ${FRONTEND_ASSISTANT:-none}"
+    write_to_log_file "INFO" "Demo Setup — namespace: $NAMESPACE, target: $TARGET, skill-path: ${SKILL_PATH:-not set}"
     echo -e "${COLOR_CYAN}Target:${COLOR_RESET}           ${COLOR_BOLD}${TARGET}${COLOR_RESET}" >/dev/tty 2>/dev/null || true
     echo -e "${COLOR_CYAN}Namespace:${COLOR_RESET}        ${COLOR_BOLD}${NAMESPACE}${COLOR_RESET}" >/dev/tty 2>/dev/null || true
-    echo -e "${COLOR_CYAN}Frontend Chat:${COLOR_RESET}    ${COLOR_BOLD}${FRONTEND_ASSISTANT:-none}${COLOR_RESET}" >/dev/tty 2>/dev/null || true
+    echo -e "${COLOR_CYAN}Skill Path:${COLOR_RESET}       ${COLOR_BOLD}${SKILL_PATH:-not set (printed at end)}${COLOR_RESET}" >/dev/tty 2>/dev/null || true
     echo -e "${COLOR_CYAN}Installer URL:${COLOR_RESET}    ${COLOR_BOLD}${INSTALLER_URL}${COLOR_RESET}" >/dev/tty 2>/dev/null || true
     echo -e "${COLOR_CYAN}Installer Branch:${COLOR_RESET} ${COLOR_BOLD}${INSTALLER_BRANCH}${COLOR_RESET}" >/dev/tty 2>/dev/null || true
     echo -e "${COLOR_CYAN}Chaos Lab URL:${COLOR_RESET}    ${COLOR_BOLD}${CHAOS_LAB_URL}${COLOR_RESET}" >/dev/tty 2>/dev/null || true
@@ -688,15 +679,14 @@ else
 fi
 
 # ===========================================================================
-# Step 4: Register Causa MCP — project .mcp.json + Frontend Assistant(s)
+# Step 4: Register Causa MCP + install skill (optional)
 # ===========================================================================
 
-# ── 4.0: Always write .mcp.json to the repo root ─────────────────────────
+# ── 4a: Always write .mcp.json to the repo root ──────────────────────────
 # .mcp.json is the cross-IDE project-level MCP standard. Any IDE that
 # supports MCP (Claude shell, Cursor, Windsurf, VS Code Copilot, Gemini CLI)
 # auto-loads this file when the developer opens or cd's into the project —
-# no per-user setup required. Committed to the repo so every developer on
-# every machine gets it automatically.
+# no per-user setup required.
 _MCP_JSON_PATH="${SCRIPT_DIR}/../.mcp.json"
 log_section "Step 4: Writing project-level .mcp.json"
 start_spinner "Writing .mcp.json to repo root..."
@@ -732,129 +722,86 @@ else
     log_validation_success ".mcp.json (failed — add manually)"
 fi
 
-# ── Per-frontend skill config (optional, controlled by --frontend) ────────
-# MCP is already handled above via .mcp.json. This section only writes the
-# causa-rca skill/instructions file to the appropriate location for each IDE.
-if [[ -z "$FRONTEND_ASSISTANT" || "$FRONTEND_ASSISTANT" == "none" ]]; then
-    log_section "Step 4: Skill Configuration (Skipped)"
-    write_to_log_file "INFO" "Frontend assistant not set — skipping skill configuration"
-    {
-        echo -e "${COLOR_YELLOW}Skill configuration skipped. Pass ${COLOR_BOLD}--frontend bob|claude-shell|all${COLOR_RESET} to also write the causa-rca skill.${COLOR_RESET}"
-        echo ""
-    } >/dev/tty 2>/dev/null || true
-    log_validation_success "Skill config (skipped — not set)"
-else
-    log_section "Step 4: Writing causa-rca skill for $FRONTEND_ASSISTANT"
+# ── 4b: Install SKILL.md to user-supplied path (optional) ────────────────
+# Invoked only when --skill-path DIR is passed. The script copies SKILL.md
+# into the given directory. IDE-specific behaviour:
+#
+#   ~/.bob/skills/causa-rca   → copied as SKILL.md (Bob picks it up automatically)
+#   ~/.claude or ~/.claude/*  → copied as CLAUDE.md with front-matter stripped
+#                               (Claude shell loads ~/.claude/CLAUDE.md as system prompt)
+#   any other dir             → copied as SKILL.md; a note is printed that
+#                               the IDE may need manual wiring
+#
+# If the copy fails for any reason the step is non-fatal — manual
+# instructions are always printed at the end of the script.
+_SKILL_INSTALLED=false
+_SKILL_INSTALL_NOTE=""
+_REPO_SKILL_FILE="${SCRIPT_DIR}/../.bob/skills/causa-rca/SKILL.md"
 
-    # ── 4a: Bob IDE — copy SKILL.md to ~/.bob/skills/causa-rca/ ──────────────
-    if [[ "$FRONTEND_ASSISTANT" == "bob" || "$FRONTEND_ASSISTANT" == "all" ]]; then
-        REPO_SKILL_FILE="${SCRIPT_DIR}/../.bob/skills/causa-rca/SKILL.md"
+if [[ -n "$SKILL_PATH" ]]; then
+    log_section "Step 4: Installing causa-rca skill to $SKILL_PATH"
 
-        start_spinner "Copying causa-rca SKILL.md to Bob IDE..."
-        mkdir -p "$BOB_SKILL_DIR"
+    # Resolve the skill source
+    if [[ ! -f "$_REPO_SKILL_FILE" ]]; then
+        write_to_log_file "WARN" "SKILL.md not found at $_REPO_SKILL_FILE — skill install skipped"
+        log_validation_success "Skill install (skipped — SKILL.md not found in repo)"
+        _SKILL_INSTALL_NOTE="SKILL.md was not found in the repo at $_REPO_SKILL_FILE. Install it manually."
+    else
+        # Expand tilde in SKILL_PATH
+        SKILL_PATH="${SKILL_PATH/#\~/$HOME}"
+        mkdir -p "$SKILL_PATH"
 
-        if [[ -f "$REPO_SKILL_FILE" ]]; then
-            cp "$REPO_SKILL_FILE" "$BOB_SKILL_FILE"
-            _skill_rc=$?
-        else
-            cat > "$BOB_SKILL_FILE" << 'SKILL_EOF'
----
-name: causa-rca
-description: Activate when a developer asks about application health, diagnostics, root cause analysis, existing RCA results, or why their application is failing.
-compatibility: Requires the Causa MCP server to be configured in Bob with tools initiate_rca and get_rca_result.
----
+        # Detect IDE from path
+        _resolved_skill_path="$SKILL_PATH/SKILL.md"
+        _install_mode="copy"  # default: plain copy as SKILL.md
 
-# Causa RCA Skill
-
-Use tools initiate_rca and get_rca_result from the Causa MCP server.
-See the full SKILL.md in the causa-demos repo for complete instructions.
-SKILL_EOF
-            _skill_rc=$?
+        if [[ "$SKILL_PATH" == *"/.claude"* || "$SKILL_PATH" == "$HOME/.claude" ]]; then
+            # Claude shell: place as CLAUDE.md with front-matter stripped
+            _resolved_skill_path="$SKILL_PATH/CLAUDE.md"
+            _install_mode="claude"
         fi
 
-        stop_spinner
-        if [[ $_skill_rc -eq 0 && -f "$BOB_SKILL_FILE" ]]; then
-            log_install_success "causa-rca SKILL.md written to Bob IDE"
-            write_to_log_file "INFO" "Skill: $BOB_SKILL_FILE"
-        else
-            log_file_only "Failed to write causa-rca SKILL.md"
-            log_validation_success "causa-rca skill (failed — copy manually to ~/.bob/skills/causa-rca/SKILL.md)"
-        fi
-    fi
+        start_spinner "Installing SKILL.md to ${_resolved_skill_path}..."
 
-    # ── 4b: Claude shell — append skill instructions to ~/.claude/CLAUDE.md ──
-    if [[ "$FRONTEND_ASSISTANT" == "claude-shell" || "$FRONTEND_ASSISTANT" == "all" ]]; then
-        REPO_SKILL_FILE="${SCRIPT_DIR}/../.bob/skills/causa-rca/SKILL.md"
-        start_spinner "Appending causa-rca skill to Claude shell CLAUDE.md..."
-        mkdir -p "$(dirname "$CLAUDE_SHELL_CLAUDE_MD")"
-
-        _skill_content=""
-        if [[ -f "$REPO_SKILL_FILE" ]]; then
-            # Strip YAML front-matter (--- ... ---) from the skill file before appending
-            _skill_content=$(python3 - "$REPO_SKILL_FILE" << 'PYEOF'
+        _skill_install_rc=1
+        if [[ "$_install_mode" == "claude" ]]; then
+            # Strip YAML front-matter before writing
+            python3 - "$_REPO_SKILL_FILE" "$_resolved_skill_path" << 'PYEOF'
 import sys, re
-with open(sys.argv[1]) as f:
+src, dst = sys.argv[1], sys.argv[2]
+with open(src) as f:
     content = f.read()
-# Strip YAML front-matter block if present
 content = re.sub(r'^---\n.*?\n---\n', '', content, count=1, flags=re.DOTALL)
-print(content.strip())
+with open(dst, 'w') as f:
+    f.write(content.strip() + "\n")
+print("ok")
 PYEOF
-)
+            _skill_install_rc=$?
         else
-            _skill_content="# Causa RCA Skill
-
-Use tools initiate_rca, get_rca_status, and get_rca_result from the Causa MCP server (causa-rca).
-Check for existing diagnostics before starting a new RCA. Poll get_rca_status until COMPLETED,
-then present root cause and fix from get_rca_result."
+            cp "$_REPO_SKILL_FILE" "$_resolved_skill_path"
+            _skill_install_rc=$?
         fi
-
-        # Append under a clearly marked section so it can be found and removed on -t
-        _SKILL_MARKER="## Causa RCA Skill (added by demo.sh)"
-        {
-            if [[ -f "$CLAUDE_SHELL_CLAUDE_MD" ]] && grep -qF "$_SKILL_MARKER" "$CLAUDE_SHELL_CLAUDE_MD" 2>/dev/null; then
-                # Already present — replace the section using python3
-                python3 - "$CLAUDE_SHELL_CLAUDE_MD" "$_SKILL_MARKER" "$_skill_content" << 'PYEOF'
-import sys
-path, marker, content = sys.argv[1], sys.argv[2], sys.argv[3]
-with open(path) as f:
-    text = f.read()
-# Replace from marker to next top-level section or end of file
-import re
-pattern = re.escape(marker) + r'.*?(?=\n## |\Z)'
-replacement = marker + "\n\n" + content
-text = re.sub(pattern, replacement, text, count=1, flags=re.DOTALL)
-with open(path, "w") as f:
-    f.write(text)
-print("updated")
-PYEOF
-            else
-                # Not present — append
-                {
-                    [[ -f "$CLAUDE_SHELL_CLAUDE_MD" ]] && echo ""
-                    echo "$_SKILL_MARKER"
-                    echo ""
-                    echo "$_skill_content"
-                } >> "$CLAUDE_SHELL_CLAUDE_MD"
-            fi
-        }
-        _skill_md_rc=$?
 
         stop_spinner
-        if [[ $_skill_md_rc -eq 0 ]]; then
-            log_install_success "causa-rca skill appended to Claude shell CLAUDE.md"
-            write_to_log_file "INFO" "Claude shell CLAUDE.md: $CLAUDE_SHELL_CLAUDE_MD"
+        if [[ $_skill_install_rc -eq 0 ]]; then
+            log_install_success "causa-rca skill installed to ${_resolved_skill_path}"
+            write_to_log_file "INFO" "Skill installed: $_resolved_skill_path"
+            _SKILL_INSTALLED=true
+            _SKILL_INSTALL_PATH="$_resolved_skill_path"
         else
-            log_file_only "Failed to update CLAUDE.md (non-fatal)"
-            log_validation_success "Claude shell CLAUDE.md (failed — add skill manually)"
+            log_file_only "Failed to install skill to $_resolved_skill_path (non-fatal)"
+            log_validation_success "Skill install (failed — see manual instructions at end)"
+            _SKILL_INSTALL_NOTE="Automatic install to $_resolved_skill_path failed. Install it manually (see below)."
         fi
     fi
+else
+    log_section "Step 4: Skill installation (Skipped — no --skill-path given)"
+    write_to_log_file "INFO" "No --skill-path provided — skill not installed automatically"
+    log_validation_success "Skill install (skipped — manual instructions printed at end)"
 fi
 
 # ===========================================================================
-# Step 5: Print Assistant Ready Prompts with container / namespace / pod info
-# ===========================================================================
-# Identify the current quarkus-perf pod name so we can give the user a
-# ready-to-paste prompt for Bob IDE / Claude / any LLM chat interface.
+# Step 5: Print ready prompts + skill setup instructions
 # ===========================================================================
 
 # Discover current quarkus-perf pod name (may be empty right after deploy)
@@ -864,8 +811,6 @@ _QP_POD=$(kubectl get pod \
     --field-selector="status.phase=Running" \
     -o "jsonpath={.items[0].metadata.name}" \
     2>>"$LOG_FILE" || true)
-
-# If not running yet, grab any pod in any phase for the prompt
 if [[ -z "$_QP_POD" ]]; then
     _QP_POD=$(kubectl get pod \
         -n "$NAMESPACE" \
@@ -873,19 +818,12 @@ if [[ -z "$_QP_POD" ]]; then
         -o "jsonpath={.items[0].metadata.name}" \
         2>>"$LOG_FILE" || true)
 fi
-
 _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
 
 {
     echo ""
     echo -e "${COLOR_CYAN}${COLOR_BOLD}========================================${COLOR_RESET}"
-    if [[ "$FRONTEND_ASSISTANT" == "claude-shell" ]]; then
-        echo -e "${COLOR_BOLD_GREEN}  Demo is ready. Open a terminal and run: claude${COLOR_RESET}"
-    elif [[ "$FRONTEND_ASSISTANT" == "bob" ]]; then
-        echo -e "${COLOR_BOLD_GREEN}  Demo is ready. Switch to Bob IDE now.${COLOR_RESET}"
-    else
-        echo -e "${COLOR_BOLD_GREEN}  Demo is ready. Open your AI assistant — Causa MCP is configured via .mcp.json${COLOR_RESET}"
-    fi
+    echo -e "${COLOR_BOLD_GREEN}  Demo is ready. Open your AI assistant.${COLOR_RESET}"
     echo -e "${COLOR_CYAN}${COLOR_BOLD}========================================${COLOR_RESET}"
     echo ""
     echo -e "${COLOR_BOLD_YELLOW}What's happening:${COLOR_RESET}"
@@ -894,52 +832,37 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
     echo -e "  • ${SCENARIO_HTTP_IDLE_TIMEOUT}: CHAOS_HTTP_IDLE_TIMEOUT_ENABLED=true"
     echo -e "  • ${SCENARIO_MEMORY_CACHE}: CHAOS_MEMORY_CACHE_ENABLED=true"
     echo -e "  • load-gen is hitting /api/bookings + /api/accounts/*/transactions"
-    echo -e "  • Combined pressure can surface RCA for HTTP heap pressure and OOM-like failures"
-
+    echo -e "  • Combined pressure surfaces RCA for HTTP heap pressure and OOM-like failures"
     echo ""
     echo -e "${COLOR_BOLD_YELLOW}Workload details:${COLOR_RESET}"
     echo -e "  Container:  ${COLOR_BOLD}${WORKLOAD_CONTAINER_NAME}${COLOR_RESET}"
     echo -e "  Namespace:  ${COLOR_BOLD}${NAMESPACE}${COLOR_RESET}"
     echo -e "  Pod:        ${COLOR_BOLD}${_POD_DISPLAY}${COLOR_RESET}"
     echo ""
-    if [[ "$FRONTEND_ASSISTANT" == "claude-shell" ]]; then
-        echo -e "${COLOR_BOLD_YELLOW}Type this in the claude shell (claude CLI):${COLOR_RESET}"
-    elif [[ "$FRONTEND_ASSISTANT" == "bob" ]]; then
-        echo -e "${COLOR_BOLD_YELLOW}Type this in Bob IDE chat:${COLOR_RESET}"
-    else
-        echo -e "${COLOR_BOLD_YELLOW}Type this in your AI assistant:${COLOR_RESET}"
-    fi
+    echo -e "${COLOR_BOLD_YELLOW}Paste one of these prompts into your AI assistant:${COLOR_RESET}"
     echo ""
     echo -e "  ${COLOR_BOLD}Prompt 1 — investigate any active failure:${COLOR_RESET}"
     echo -e "  ${COLOR_BOLD}Use the causa-rca skill to investigate why my quarkus-perf app is unhealthy."
     echo -e "  App: ${WORKLOAD_APP_NAME}, namespace: ${NAMESPACE}, container: ${WORKLOAD_CONTAINER_NAME}, pod: ${_POD_DISPLAY}."
     echo -e "  Check existing diagnostics first, then run RCA if needed, and show the root cause and fix.${COLOR_RESET}"
     echo ""
-    echo -e "  ${COLOR_BOLD}Prompt 2 — focus on HTTP large-response pressure:${COLOR_RESET}"
+    echo -e "  ${COLOR_BOLD}Prompt 2 — HTTP large-response pressure:${COLOR_RESET}"
     echo -e "  ${COLOR_BOLD}Use the causa-rca skill to investigate whether quarkus-perf has HTTP or memory pressure from the large-response scenario."
     echo -e "  App: ${WORKLOAD_APP_NAME}, namespace: ${NAMESPACE}, container: ${WORKLOAD_CONTAINER_NAME}, pod: ${_POD_DISPLAY}."
     echo -e "  Check if large responses and idle connections are causing heap growth, then summarize the RCA.${COLOR_RESET}"
     echo ""
-    echo -e "  ${COLOR_BOLD}Prompt 3 — focus on idle-timeout pressure:${COLOR_RESET}"
+    echo -e "  ${COLOR_BOLD}Prompt 3 — idle-timeout pressure:${COLOR_RESET}"
     echo -e "  ${COLOR_BOLD}Use the causa-rca skill to investigate whether quarkus-perf is unhealthy because connections are being held open too long."
     echo -e "  App: ${WORKLOAD_APP_NAME}, namespace: ${NAMESPACE}, container: ${WORKLOAD_CONTAINER_NAME}, pod: ${_POD_DISPLAY}."
     echo -e "  Check existing diagnostics first and explain whether the idle-timeout scenario is contributing to the failure.${COLOR_RESET}"
     echo ""
-    echo -e "  ${COLOR_BOLD}Prompt 4 — focus on memory-cache / OOM:${COLOR_RESET}"
+    echo -e "  ${COLOR_BOLD}Prompt 4 — memory-cache / OOM:${COLOR_RESET}"
     echo -e "  ${COLOR_BOLD}Use the causa-rca skill to investigate whether quarkus-perf is hitting a memory leak or OOM condition."
     echo -e "  App: ${WORKLOAD_APP_NAME}, namespace: ${NAMESPACE}, container: ${WORKLOAD_CONTAINER_NAME}, pod: ${_POD_DISPLAY}."
     echo -e "  Check for memory issues, use existing diagnostics if present, otherwise run a fresh RCA, and show the fix.${COLOR_RESET}"
     echo ""
-    if [[ "$FRONTEND_ASSISTANT" == "claude-shell" ]]; then
-        echo -e "${COLOR_CYAN}What claude shell will do:${COLOR_RESET}"
-        echo -e "  1. Read causa-rca skill instructions from ${CLAUDE_SHELL_CLAUDE_MD}"
-    elif [[ "$FRONTEND_ASSISTANT" == "bob" || "$FRONTEND_ASSISTANT" == "all" ]]; then
-        echo -e "${COLOR_CYAN}What Bob will do:${COLOR_RESET}"
-        echo -e "  1. Use the causa-rca skill flow from ${BOB_SKILL_FILE}"
-    else
-        echo -e "${COLOR_CYAN}Your AI assistant will:${COLOR_RESET}"
-        echo -e "  1. Use the Causa MCP tools from .mcp.json"
-    fi
+    echo -e "${COLOR_CYAN}Your AI assistant will:${COLOR_RESET}"
+    echo -e "  1. Use the Causa MCP tools registered via .mcp.json"
     echo -e "  2. Check existing diagnostics before starting a duplicate RCA"
     echo -e "  3. Initiate RCA for ${WORKLOAD_APP_NAME} in namespace ${NAMESPACE} when needed"
     echo -e "  4. Poll until COMPLETED, then present root cause + fix"
@@ -950,12 +873,42 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
     echo -e "${COLOR_CYAN}Causa Backend:${COLOR_RESET} ${CAUSA_BACKEND_URL}/api/v1/diagnostics"
     echo -e "${COLOR_CYAN}Causa MCP:${COLOR_RESET}     ${CAUSA_MCP_URL}/mcp"
     echo -e "${COLOR_CYAN}Project MCP config:${COLOR_RESET} ${SCRIPT_DIR}/../.mcp.json"
-    if [[ "$FRONTEND_ASSISTANT" == "bob" || "$FRONTEND_ASSISTANT" == "all" ]]; then
-        echo -e "${COLOR_CYAN}Bob Skill file:${COLOR_RESET} ${BOB_SKILL_FILE}"
+    echo ""
+
+    # ── Skill setup summary ─────────────────────────────────────────────────
+    echo -e "${COLOR_CYAN}${COLOR_BOLD}----------------------------------------${COLOR_RESET}"
+    echo -e "${COLOR_BOLD_YELLOW}Skill setup:${COLOR_RESET}"
+    if [[ "$_SKILL_INSTALLED" == "true" ]]; then
+        echo -e "  ${COLOR_BOLD_GREEN}✓ Installed to: ${_SKILL_INSTALL_PATH}${COLOR_RESET}"
+        echo -e "  Your AI assistant will load it automatically from that location."
+    else
+        if [[ -n "$_SKILL_INSTALL_NOTE" ]]; then
+            echo -e "  ${COLOR_YELLOW}⚠ ${_SKILL_INSTALL_NOTE}${COLOR_RESET}"
+            echo ""
+        else
+            echo -e "  ${COLOR_YELLOW}Skill was not installed automatically (no --skill-path given).${COLOR_RESET}"
+            echo ""
+        fi
+        echo -e "  ${COLOR_BOLD}To configure it manually, copy the SKILL.md to your IDE's skill directory:${COLOR_RESET}"
+        echo ""
+        echo -e "  ${COLOR_BOLD}Skill file location in this repo:${COLOR_RESET}"
+        echo -e "    ${SCRIPT_DIR}/../.bob/skills/causa-rca/SKILL.md"
+        echo ""
+        echo -e "  ${COLOR_BOLD}Bob IDE${COLOR_RESET}"
+        echo -e "    mkdir -p ~/.bob/skills/causa-rca"
+        echo -e "    cp ${SCRIPT_DIR}/../.bob/skills/causa-rca/SKILL.md ~/.bob/skills/causa-rca/SKILL.md"
+        echo -e "  ${COLOR_BOLD}  Or re-run:${COLOR_RESET} $0 --skill-path ~/.bob/skills/causa-rca"
+        echo ""
+        echo -e "  ${COLOR_BOLD}Claude shell (claude CLI)${COLOR_RESET}"
+        echo -e "    The skill content goes into ~/.claude/CLAUDE.md (user-level system prompt)."
+        echo -e "    Append the skill manually, or re-run:"
+        echo -e "  ${COLOR_BOLD}  Re-run:${COLOR_RESET} $0 --skill-path ~/.claude"
+        echo ""
+        echo -e "  ${COLOR_BOLD}Cursor / Windsurf / other IDEs${COLOR_RESET}"
+        echo -e "    Copy SKILL.md content into your IDE's rules/instructions file."
+        echo -e "    MCP is already wired via .mcp.json — only the skill instructions need placing."
     fi
-    if [[ "$FRONTEND_ASSISTANT" == "claude-shell" || "$FRONTEND_ASSISTANT" == "all" ]]; then
-        echo -e "${COLOR_CYAN}Claude shell CLAUDE.md:${COLOR_RESET} ${CLAUDE_SHELL_CLAUDE_MD}"
-    fi
+    echo -e "${COLOR_CYAN}${COLOR_BOLD}----------------------------------------${COLOR_RESET}"
     echo ""
 } >/dev/tty 2>/dev/null || true
 
