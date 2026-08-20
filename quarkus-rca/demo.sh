@@ -121,8 +121,8 @@ show_help() {
     echo "                             fails, instructions are printed at the end so you can do"
     echo "                             it manually."
     echo "                             Examples:"
-    echo "                               --skill-path ~/.bob/skills/causa-rca      (Bob IDE)"
-    echo "                               --skill-path ~/.claude                    (Claude shell)"
+    echo "                               --skill-path ~/.bob/skills      (Bob IDE)"
+    echo "                               --skill-path ~/.claude          (Claude shell)"
     echo "    -t                       Terminate mode: clean up all resources"
     echo "    --skip-installer         Skip running install.sh (use when stack is already deployed)"
     echo "    --installer-url URL      Git URL of the installer repo"
@@ -163,7 +163,7 @@ show_help() {
     echo "    $0"
     echo ""
     echo "    # Also install skill to Bob IDE"
-    echo "    $0 --skill-path ~/.bob/skills/causa-rca"
+    echo "    $0 --skill-path ~/.bob/skills"
     echo ""
     echo "    # Also install skill to Claude shell"
     echo "    $0 --skill-path ~/.claude"
@@ -723,10 +723,11 @@ else
 fi
 
 # ── 4b: Install SKILL.md to user-supplied path (optional) ────────────────
-# Invoked only when --skill-path DIR is passed. The script copies SKILL.md
-# into the given directory. IDE-specific behaviour:
+# Invoked only when --skill-path DIR is passed. The script resolves the
+# target file name and any IDE-specific handling automatically:
 #
-#   ~/.bob/skills/causa-rca   → copied as SKILL.md (Bob picks it up automatically)
+#   ~/.bob/skills             → appends /causa-rca and copies as SKILL.md
+#   ~/.bob/skills/causa-rca   → copied as SKILL.md (same result, explicit)
 #   ~/.claude or ~/.claude/*  → copied as CLAUDE.md with front-matter stripped
 #                               (Claude shell loads ~/.claude/CLAUDE.md as system prompt)
 #   any other dir             → copied as SKILL.md; a note is printed that
@@ -749,16 +750,26 @@ if [[ -n "$SKILL_PATH" ]]; then
     else
         # Expand tilde in SKILL_PATH
         SKILL_PATH="${SKILL_PATH/#\~/$HOME}"
-        mkdir -p "$SKILL_PATH"
 
-        # Detect IDE from path
-        _resolved_skill_path="$SKILL_PATH/SKILL.md"
+        # Detect IDE from path and adjust target accordingly
         _install_mode="copy"  # default: plain copy as SKILL.md
+
+        if [[ "$SKILL_PATH" == "$HOME/.bob/skills" || "$SKILL_PATH" == *"/.bob/skills" ]]; then
+            # Bob IDE: skills live in named subdirectories — append causa-rca automatically
+            SKILL_PATH="${SKILL_PATH}/causa-rca"
+        fi
 
         if [[ "$SKILL_PATH" == *"/.claude"* || "$SKILL_PATH" == "$HOME/.claude" ]]; then
             # Claude shell: place as CLAUDE.md with front-matter stripped
-            _resolved_skill_path="$SKILL_PATH/CLAUDE.md"
             _install_mode="claude"
+        fi
+
+        mkdir -p "$SKILL_PATH"
+
+        # Resolve final file path
+        _resolved_skill_path="$SKILL_PATH/SKILL.md"
+        if [[ "$_install_mode" == "claude" ]]; then
+            _resolved_skill_path="$SKILL_PATH/CLAUDE.md"
         fi
 
         start_spinner "Installing SKILL.md to ${_resolved_skill_path}..."
@@ -897,7 +908,7 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
         echo -e "  ${COLOR_BOLD}Bob IDE${COLOR_RESET}"
         echo -e "    mkdir -p ~/.bob/skills/causa-rca"
         echo -e "    cp ${SCRIPT_DIR}/../.bob/skills/causa-rca/SKILL.md ~/.bob/skills/causa-rca/SKILL.md"
-        echo -e "  ${COLOR_BOLD}  Or re-run:${COLOR_RESET} $0 --skill-path ~/.bob/skills/causa-rca"
+        echo -e "  ${COLOR_BOLD}  Or re-run:${COLOR_RESET} $0 --skill-path ~/.bob/skills"
         echo ""
         echo -e "  ${COLOR_BOLD}Claude shell (claude CLI)${COLOR_RESET}"
         echo -e "    The skill content goes into ~/.claude/CLAUDE.md (user-level system prompt)."
@@ -906,7 +917,6 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
         echo ""
         echo -e "  ${COLOR_BOLD}Cursor / Windsurf / other IDEs${COLOR_RESET}"
         echo -e "    Copy SKILL.md content into your IDE's rules/instructions file."
-        echo -e "    MCP is already wired via .mcp.json — only the skill instructions need placing."
     fi
     echo -e "${COLOR_CYAN}${COLOR_BOLD}----------------------------------------${COLOR_RESET}"
     echo ""

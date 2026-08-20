@@ -41,7 +41,7 @@ cd causa-demos/quarkus-rca
 ./demo.sh
 
 # Also install the causa-rca skill to Bob IDE
-./demo.sh --skill-path ~/.bob/skills/causa-rca
+./demo.sh --skill-path ~/.bob/skills
 
 # Also install the causa-rca skill for Claude shell
 ./demo.sh --skill-path ~/.claude
@@ -71,8 +71,8 @@ The demo always writes `.mcp.json` to the repo root. Any IDE that implements the
 The `causa-rca` skill teaches the AI assistant how to use the Causa MCP tools correctly. Use `--skill-path` to install it automatically, or copy it manually after the script completes.
 
 ```bash
-# Bob IDE — SKILL.md is auto-discovered from ~/.bob/skills/
-./demo.sh --skill-path ~/.bob/skills/causa-rca
+# Bob IDE — script appends /causa-rca automatically
+./demo.sh --skill-path ~/.bob/skills
 
 # Claude shell — placed as ~/.claude/CLAUDE.md (user-level system prompt)
 ./demo.sh --skill-path ~/.claude
