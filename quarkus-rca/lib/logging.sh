@@ -198,6 +198,45 @@ stop_spinner() {
 }
 
 ################################################################################
+# print_banner — terminal: cyan bold title inside a separator block
+# Usage: print_banner "Quarkus RCA Demo — Cleanup"
+################################################################################
+print_banner() {
+    local title="$1"
+    {
+        echo ""
+        echo -e "${COLOR_CYAN}${COLOR_BOLD}==========================================${COLOR_RESET}"
+        echo -e "${COLOR_CYAN}${COLOR_BOLD}${title}${COLOR_RESET}"
+        echo -e "${COLOR_CYAN}${COLOR_BOLD}==========================================${COLOR_RESET}"
+        echo ""
+    } >/dev/tty 2>/dev/null || true
+}
+
+################################################################################
+# print_kv_row — terminal: "Label:   Value" in cyan/bold
+# Usage: print_kv_row "Target" "$TARGET"
+################################################################################
+print_kv_row() {
+    local label="$1"
+    local value="$2"
+    printf "${COLOR_CYAN}%-18s${COLOR_RESET}${COLOR_BOLD}%s${COLOR_RESET}\n" "${label}:" "${value}" \
+        >/dev/tty 2>/dev/null || true
+}
+
+################################################################################
+# print_elapsed — terminal: bold-yellow elapsed-time footer
+# Usage: print_elapsed "$ELAPSED"
+################################################################################
+print_elapsed() {
+    local elapsed="$1"
+    {
+        echo ""
+        echo -e "${COLOR_BOLD_YELLOW}Total time: ${elapsed}${COLOR_RESET}"
+        echo ""
+    } >/dev/tty 2>/dev/null || true
+}
+
+################################################################################
 # Export all functions
 ################################################################################
 export -f get_timestamp
@@ -210,3 +249,6 @@ export -f log_install_success
 export -f log_error
 export -f start_spinner
 export -f stop_spinner
+export -f print_banner
+export -f print_kv_row
+export -f print_elapsed

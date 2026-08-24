@@ -89,10 +89,8 @@ terminate_demo() {
     # ── Step 2: Delete quarkus-perf workload + load-gen ──────────────────────
     log_section "Deleting quarkus-perf workload"
 
-    # Manifests are sourced from the chaos-lab clone under the artifacts dir.
-    # chaos-lab is cloned by demo.sh into $demo_dir/chaos-lab at Step 1.5.
-    local _manifest_dir="$demo_dir/chaos-lab/quarkus-perf/manifests"
-
+    # Use the rendered manifest written by demo.sh during install; the raw
+    # chaos-lab clone is deleted in Step 3 and is not available here.
     if check_namespace "$namespace"; then
         # Delete load-gen job first (Jobs are immutable; delete by name)
         start_spinner "Deleting load-gen job..."
@@ -102,7 +100,7 @@ terminate_demo() {
         log_install_success "load-gen job deleted"
 
         # Delete workload — spinner wraps the actual kubectl delete work
-        local workload_manifest="$_manifest_dir/quarkus-perf-deploy.yaml"
+        local workload_manifest="$demo_dir/quarkus-perf-deploy.rendered.yaml"
         start_spinner "Deleting quarkus-perf deployment..."
         delete_manifest "$workload_manifest" "$namespace"
         local _delete_rc=$?

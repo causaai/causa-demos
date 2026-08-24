@@ -245,30 +245,18 @@ fi
 # Opening banner
 # ---------------------------------------------------------------------------
 if [[ "$TERMINATE" == "true" ]]; then
-    {
-        echo ""
-        echo -e "${COLOR_CYAN}${COLOR_BOLD}==========================================${COLOR_RESET}"
-        echo -e "${COLOR_CYAN}${COLOR_BOLD}Quarkus RCA Demo — Cleanup${COLOR_RESET}"
-        echo -e "${COLOR_CYAN}${COLOR_BOLD}==========================================${COLOR_RESET}"
-        echo ""
-    } >/dev/tty 2>/dev/null || true
+    print_banner "Quarkus RCA Demo — Cleanup"
     write_to_log_file "INFO" "Demo Cleanup — namespace: $NAMESPACE"
 else
-    {
-        echo ""
-        echo -e "${COLOR_CYAN}${COLOR_BOLD}==========================================${COLOR_RESET}"
-        echo -e "${COLOR_CYAN}${COLOR_BOLD}Running Quarkus RCA Demo${COLOR_RESET}"
-        echo -e "${COLOR_CYAN}${COLOR_BOLD}==========================================${COLOR_RESET}"
-        echo ""
-    } >/dev/tty 2>/dev/null || true
+    print_banner "Running Quarkus RCA Demo"
     write_to_log_file "INFO" "Demo Setup — namespace: $NAMESPACE, target: $TARGET, skill-path: ${SKILL_PATH:-not set}"
-    echo -e "${COLOR_CYAN}Target:${COLOR_RESET}           ${COLOR_BOLD}${TARGET}${COLOR_RESET}" >/dev/tty 2>/dev/null || true
-    echo -e "${COLOR_CYAN}Namespace:${COLOR_RESET}        ${COLOR_BOLD}${NAMESPACE}${COLOR_RESET}" >/dev/tty 2>/dev/null || true
-    echo -e "${COLOR_CYAN}Skill Path:${COLOR_RESET}       ${COLOR_BOLD}${SKILL_PATH:-not set (printed at end)}${COLOR_RESET}" >/dev/tty 2>/dev/null || true
-    echo -e "${COLOR_CYAN}Installer URL:${COLOR_RESET}    ${COLOR_BOLD}${INSTALLER_URL}${COLOR_RESET}" >/dev/tty 2>/dev/null || true
-    echo -e "${COLOR_CYAN}Installer Branch:${COLOR_RESET} ${COLOR_BOLD}${INSTALLER_BRANCH}${COLOR_RESET}" >/dev/tty 2>/dev/null || true
-    echo -e "${COLOR_CYAN}Chaos Lab URL:${COLOR_RESET}    ${COLOR_BOLD}${CHAOS_LAB_URL}${COLOR_RESET}" >/dev/tty 2>/dev/null || true
-    echo -e "${COLOR_CYAN}Chaos Lab Branch:${COLOR_RESET} ${COLOR_BOLD}${CHAOS_LAB_BRANCH}${COLOR_RESET}" >/dev/tty 2>/dev/null || true
+    print_kv_row "Target"           "$TARGET"
+    print_kv_row "Namespace"        "$NAMESPACE"
+    print_kv_row "Skill Path"       "${SKILL_PATH:-not set (printed at end)}"
+    print_kv_row "Installer URL"    "$INSTALLER_URL"
+    print_kv_row "Installer Branch" "$INSTALLER_BRANCH"
+    print_kv_row "Chaos Lab URL"    "$CHAOS_LAB_URL"
+    print_kv_row "Chaos Lab Branch" "$CHAOS_LAB_BRANCH"
     echo "" >/dev/tty 2>/dev/null || true
 fi
 
@@ -309,25 +297,20 @@ PYEOF
 
     ELAPSED=$(get_elapsed_time "$SCRIPT_START_TIME")
     write_to_log_file "SUCCESS" "Total cleanup time: $ELAPSED"
-    {
-        echo ""
-        echo -e "${COLOR_BOLD_YELLOW}Total cleanup time: $ELAPSED${COLOR_RESET}"
-        echo ""
-    } >/dev/tty 2>/dev/null || true
+    print_elapsed "$ELAPSED"
     exit 0
 fi
 
 # ---------------------------------------------------------------------------
 # Pre-flight checks
 # ---------------------------------------------------------------------------
-# Check non-runtime prerequisites first (kind is required only when target is kind)
-_REQUIRED_CMDS=("git" "kubectl")
-if [[ "$TARGET" == "kind" ]]; then
-    _REQUIRED_CMDS+=("kind")
+# Validate required binaries (git, kubectl, python3; kind when target=kind)
+if ! check_prerequisites "$TARGET"; then
+    exit 1
 fi
 
-if ! check_required_commands "${_REQUIRED_CMDS[@]}"; then
-    log_error "Missing required commands (${_REQUIRED_CMDS[*]}). Please install them and try again."
+# Verify the Kubernetes API is reachable before starting any deployment
+if ! check_cluster_reachability; then
     exit 1
 fi
 
@@ -737,7 +720,7 @@ fi
 # instructions are always printed at the end of the script.
 _SKILL_INSTALLED=false
 _SKILL_INSTALL_NOTE=""
-_REPO_SKILL_FILE="${SCRIPT_DIR}/../.bob/skills/causa-rca/SKILL.md"
+_REPO_SKILL_FILE="${SCRIPT_DIR}/../skills/causa-rca/SKILL.md"
 
 if [[ -n "$SKILL_PATH" ]]; then
     log_section "Step 4: Installing causa-rca skill to $SKILL_PATH"
@@ -903,11 +886,11 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
         echo -e "  ${COLOR_BOLD}To configure it manually, copy the SKILL.md to your IDE's skill directory:${COLOR_RESET}"
         echo ""
         echo -e "  ${COLOR_BOLD}Skill file location in this repo:${COLOR_RESET}"
-        echo -e "    ${SCRIPT_DIR}/../.bob/skills/causa-rca/SKILL.md"
+        echo -e "    ${SCRIPT_DIR}/../skills/causa-rca/SKILL.md"
         echo ""
         echo -e "  ${COLOR_BOLD}Bob IDE${COLOR_RESET}"
         echo -e "    mkdir -p ~/.bob/skills/causa-rca"
-        echo -e "    cp ${SCRIPT_DIR}/../.bob/skills/causa-rca/SKILL.md ~/.bob/skills/causa-rca/SKILL.md"
+        echo -e "    cp ${SCRIPT_DIR}/../skills/causa-rca/SKILL.md ~/.bob/skills/causa-rca/SKILL.md"
         echo -e "  ${COLOR_BOLD}  Or re-run:${COLOR_RESET} $0 --skill-path ~/.bob/skills"
         echo ""
         echo -e "  ${COLOR_BOLD}Claude shell (claude CLI)${COLOR_RESET}"
@@ -939,9 +922,6 @@ write_to_log_file "SUCCESS" "Demo setup completed in $ELAPSED"
     echo "========================================"
 } >>"$LOG_FILE"
 
-{
-    echo -e "${COLOR_BOLD_YELLOW}Total setup time: $ELAPSED${COLOR_RESET}"
-    echo ""
-    echo -e "${COLOR_CYAN}Log file: ${LOG_FILE}${COLOR_RESET}"
-    echo ""
-} >/dev/tty 2>/dev/null || true
+print_elapsed "$ELAPSED"
+echo -e "${COLOR_CYAN}Log file: ${LOG_FILE}${COLOR_RESET}" >/dev/tty 2>/dev/null || true
+echo "" >/dev/tty 2>/dev/null || true

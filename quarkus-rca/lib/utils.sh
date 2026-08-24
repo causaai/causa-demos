@@ -49,6 +49,39 @@ check_required_commands() {
     return 0
 }
 
+# check_prerequisites <target>
+# Builds the required-command list for the given target, validates each command
+# is present, and validates cluster reachability when target is "kind" or
+# whenever the Kubernetes API must be reachable.
+check_prerequisites() {
+    local target="${1:-kind}"
+
+    local _cmds=("git" "kubectl" "python3")
+    if [[ "$target" == "kind" ]]; then
+        _cmds+=("kind")
+    fi
+
+    if ! check_required_commands "${_cmds[@]}"; then
+        log_error "Missing required commands. Please install them and try again."
+        return 1
+    fi
+    return 0
+}
+
+# check_cluster_reachability
+# Verifies the Kubernetes API server is reachable before deployment starts.
+# Prints a clear error and returns non-zero when the cluster is not available.
+check_cluster_reachability() {
+    if ! kubectl cluster-info >>"$LOG_FILE" 2>&1; then
+        log_error "Kubernetes API server is not reachable."
+        log_error "Ensure your cluster is running and your kubeconfig is correct."
+        log_error "  kind target: run 'kind create cluster' first, or check 'kubectl cluster-info'."
+        return 1
+    fi
+    log_file_only "Kubernetes cluster is reachable"
+    return 0
+}
+
 clone_repo() {
     local repo_url="$1"
     local target_dir="$2"
@@ -177,6 +210,8 @@ export -f start_timer
 export -f get_elapsed_time
 export -f command_exists
 export -f check_required_commands
+export -f check_prerequisites
+export -f check_cluster_reachability
 export -f clone_repo
 export -f ensure_directory
 export -f check_namespace
