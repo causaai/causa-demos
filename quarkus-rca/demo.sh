@@ -121,8 +121,9 @@ show_help() {
     echo "                             fails, instructions are printed at the end so you can do"
     echo "                             it manually."
     echo "                             Examples:"
-    echo "                               --skill-path ~/.bob/skills      (Bob IDE)"
-    echo "                               --skill-path ~/.claude          (Claude shell)"
+    echo "                               --skill-path ~/.bob/skills        (Bob IDE)"
+    echo "                               --skill-path ~/.claude/skills     (Claude Code — skills dir)"
+    echo "                               --skill-path ~/.claude            (claude CLI — CLAUDE.md)"
     echo "    -t                       Terminate mode: clean up all resources"
     echo "    --skip-installer         Skip running install.sh (use when stack is already deployed)"
     echo "    --installer-url URL      Git URL of the installer repo"
@@ -165,7 +166,10 @@ show_help() {
     echo "    # Also install skill to Bob IDE"
     echo "    $0 --skill-path ~/.bob/skills"
     echo ""
-    echo "    # Also install skill to Claude shell"
+    echo "    # Also install skill to Claude Code IDE (skills dir)"
+    echo "    $0 --skill-path ~/.claude/skills"
+    echo ""
+    echo "    # Also install skill to claude CLI (appended to CLAUDE.md)"
     echo "    $0 --skill-path ~/.claude"
     echo ""
     echo "    # Deploy to OpenShift or VM target"
@@ -709,12 +713,15 @@ fi
 # Invoked only when --skill-path DIR is passed. The script resolves the
 # target file name and any IDE-specific handling automatically:
 #
-#   ~/.bob/skills             → appends /causa-rca and copies as SKILL.md
-#   ~/.bob/skills/causa-rca   → copied as SKILL.md (same result, explicit)
-#   ~/.claude or ~/.claude/*  → copied as CLAUDE.md with front-matter stripped
-#                               (Claude shell loads ~/.claude/CLAUDE.md as system prompt)
-#   any other dir             → copied as SKILL.md; a note is printed that
-#                               the IDE may need manual wiring
+#   ~/.bob/skills               → appends /causa-rca and copies as SKILL.md
+#   ~/.bob/skills/causa-rca     → copied as SKILL.md (same result, explicit)
+#   ~/.claude/skills            → appends /causa-rca and copies as SKILL.md
+#                                 (Claude Code IDE personal skills directory)
+#   ~/.claude/skills/causa-rca  → copied as SKILL.md (same result, explicit)
+#   ~/.claude (bare)            → copied as CLAUDE.md with front-matter stripped
+#                                 (claude CLI loads ~/.claude/CLAUDE.md as system prompt)
+#   any other dir               → copied as SKILL.md; a note is printed that
+#                                 the IDE may need manual wiring
 #
 # If the copy fails for any reason the step is non-fatal — manual
 # instructions are always printed at the end of the script.
@@ -740,10 +747,12 @@ if [[ -n "$SKILL_PATH" ]]; then
         if [[ "$SKILL_PATH" == "$HOME/.bob/skills" || "$SKILL_PATH" == *"/.bob/skills" ]]; then
             # Bob IDE: skills live in named subdirectories — append causa-rca automatically
             SKILL_PATH="${SKILL_PATH}/causa-rca"
-        fi
-
-        if [[ "$SKILL_PATH" == *"/.claude"* || "$SKILL_PATH" == "$HOME/.claude" ]]; then
-            # Claude shell: place as CLAUDE.md with front-matter stripped
+        elif [[ "$SKILL_PATH" == "$HOME/.claude/skills" || "$SKILL_PATH" == *"/.claude/skills" ]]; then
+            # Claude Code IDE personal skills directory: same named-subdir layout as Bob
+            SKILL_PATH="${SKILL_PATH}/causa-rca"
+        elif [[ "$SKILL_PATH" == "$HOME/.claude" || "$SKILL_PATH" == *"/.claude" ]]; then
+            # claude CLI: place as CLAUDE.md with front-matter stripped
+            # (claude CLI reads ~/.claude/CLAUDE.md as a global system prompt)
             _install_mode="claude"
         fi
 
@@ -893,7 +902,11 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
         echo -e "    cp ${SCRIPT_DIR}/../skills/causa-rca/SKILL.md ~/.bob/skills/causa-rca/SKILL.md"
         echo -e "  ${COLOR_BOLD}  Or re-run:${COLOR_RESET} $0 --skill-path ~/.bob/skills"
         echo ""
-        echo -e "  ${COLOR_BOLD}Claude shell (claude CLI)${COLOR_RESET}"
+        echo -e "  ${COLOR_BOLD}Claude Code IDE${COLOR_RESET}"
+        echo -e "    Skills live at ~/.claude/skills/<name>/SKILL.md (personal skills directory)."
+        echo -e "  ${COLOR_BOLD}  Re-run:${COLOR_RESET} $0 --skill-path ~/.claude/skills"
+        echo ""
+        echo -e "  ${COLOR_BOLD}claude CLI (terminal)${COLOR_RESET}"
         echo -e "    The skill content goes into ~/.claude/CLAUDE.md (user-level system prompt)."
         echo -e "    Append the skill manually, or re-run:"
         echo -e "  ${COLOR_BOLD}  Re-run:${COLOR_RESET} $0 --skill-path ~/.claude"
