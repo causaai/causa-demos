@@ -115,15 +115,13 @@ show_help() {
     echo "    --target TARGET          Target platform: kind, openshift, vm, etc. (default: kind)"
     echo "                             Passed directly to installer install.sh --target <TARGET>."
     echo "    -n namespace             Namespace for the RCA stack and workload (default: causa-rca)"
-    echo "    --skill-path DIR         Directory to copy the causa-rca SKILL.md into."
-    echo "                             The script auto-detects the IDE from the path and places"
-    echo "                             the file correctly. If the path is unsupported or the copy"
-    echo "                             fails, instructions are printed at the end so you can do"
-    echo "                             it manually."
+    echo "    --skill-path DIR         Directory to install the causa-rca skill into."
+    echo "                             The script appends /causa-rca and writes SKILL.md"
+    echo "                             at the correct location for the detected tool."
+    echo "                             If the copy fails, manual instructions are printed."
     echo "                             Examples:"
-    echo "                               --skill-path ~/.bob/skills        (Bob IDE)"
-    echo "                               --skill-path ~/.claude/skills     (Claude Code — skills dir)"
-    echo "                               --skill-path ~/.claude            (claude CLI — CLAUDE.md)"
+    echo "                               --skill-path ~/.bob/skills        (Bob)"
+    echo "                               --skill-path ~/.claude/skills     (Claude Code)"
     echo "    -t                       Terminate mode: clean up all resources"
     echo "    --skip-installer         Skip running install.sh (use when stack is already deployed)"
     echo "    --installer-url URL      Git URL of the installer repo"
@@ -163,14 +161,11 @@ show_help() {
     echo "    # Full automated demo (MCP registered, manual skill setup printed at end)"
     echo "    $0"
     echo ""
-    echo "    # Also install skill to Bob IDE"
+    echo "    # Also install skill to Bob"
     echo "    $0 --skill-path ~/.bob/skills"
     echo ""
-    echo "    # Also install skill to Claude Code IDE (skills dir)"
+    echo "    # Also install skill to Claude Code"
     echo "    $0 --skill-path ~/.claude/skills"
-    echo ""
-    echo "    # Also install skill to claude CLI (appended to CLAUDE.md)"
-    echo "    $0 --skill-path ~/.claude"
     echo ""
     echo "    # Deploy to OpenShift or VM target"
     echo "    $0 --target openshift -n my-rca"
@@ -711,17 +706,18 @@ fi
 
 # ── 4b: Install SKILL.md to user-supplied path (optional) ────────────────
 # Invoked only when --skill-path DIR is passed. The script resolves the
-# target file name and any IDE-specific handling automatically:
+# target file name and any tool-specific handling automatically:
 #
 #   ~/.bob/skills               → appends /causa-rca and copies as SKILL.md
 #   ~/.bob/skills/causa-rca     → copied as SKILL.md (same result, explicit)
 #   ~/.claude/skills            → appends /causa-rca and copies as SKILL.md
-#                                 (Claude Code IDE personal skills directory)
+#                                 (Claude Code skills dir — invokable as /causa-rca)
 #   ~/.claude/skills/causa-rca  → copied as SKILL.md (same result, explicit)
-#   ~/.claude (bare)            → copied as CLAUDE.md with front-matter stripped
-#                                 (claude CLI loads ~/.claude/CLAUDE.md as system prompt)
+#   ~/.claude (bare)            → prints a warning and copies as CLAUDE.md
+#                                 (global prompt only — /causa-rca command will NOT work;
+#                                  use ~/.claude/skills instead for the full skill experience)
 #   any other dir               → copied as SKILL.md; a note is printed that
-#                                 the IDE may need manual wiring
+#                                 the tool may need manual wiring
 #
 # If the copy fails for any reason the step is non-fatal — manual
 # instructions are always printed at the end of the script.
@@ -748,11 +744,12 @@ if [[ -n "$SKILL_PATH" ]]; then
             # Bob IDE: skills live in named subdirectories — append causa-rca automatically
             SKILL_PATH="${SKILL_PATH}/causa-rca"
         elif [[ "$SKILL_PATH" == "$HOME/.claude/skills" || "$SKILL_PATH" == *"/.claude/skills" ]]; then
-            # Claude Code IDE personal skills directory: same named-subdir layout as Bob
+            # Claude Code skills directory: skills live in named subdirectories
             SKILL_PATH="${SKILL_PATH}/causa-rca"
         elif [[ "$SKILL_PATH" == "$HOME/.claude" || "$SKILL_PATH" == *"/.claude" ]]; then
-            # claude CLI: place as CLAUDE.md with front-matter stripped
-            # (claude CLI reads ~/.claude/CLAUDE.md as a global system prompt)
+            # ~/.claude (bare): writes CLAUDE.md as a global prompt — the /causa-rca
+            # command and auto-invocation will NOT work. Warn the user and continue.
+            log_validation_success "Warning: ~/.claude installs as a global prompt only — use --skill-path ~/.claude/skills for the full /causa-rca skill experience"
             _install_mode="claude"
         fi
 
@@ -902,14 +899,10 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
         echo -e "    cp ${SCRIPT_DIR}/../skills/causa-rca/SKILL.md ~/.bob/skills/causa-rca/SKILL.md"
         echo -e "  ${COLOR_BOLD}  Or re-run:${COLOR_RESET} $0 --skill-path ~/.bob/skills"
         echo ""
-        echo -e "  ${COLOR_BOLD}Claude Code IDE${COLOR_RESET}"
-        echo -e "    Skills live at ~/.claude/skills/<name>/SKILL.md (personal skills directory)."
-        echo -e "  ${COLOR_BOLD}  Re-run:${COLOR_RESET} $0 --skill-path ~/.claude/skills"
-        echo ""
-        echo -e "  ${COLOR_BOLD}claude CLI (terminal)${COLOR_RESET}"
-        echo -e "    The skill content goes into ~/.claude/CLAUDE.md (user-level system prompt)."
-        echo -e "    Append the skill manually, or re-run:"
-        echo -e "  ${COLOR_BOLD}  Re-run:${COLOR_RESET} $0 --skill-path ~/.claude"
+        echo -e "  ${COLOR_BOLD}Claude Code${COLOR_RESET}"
+        echo -e "    mkdir -p ~/.claude/skills/causa-rca"
+        echo -e "    cp ${SCRIPT_DIR}/../skills/causa-rca/SKILL.md ~/.claude/skills/causa-rca/SKILL.md"
+        echo -e "  ${COLOR_BOLD}  Or re-run:${COLOR_RESET} $0 --skill-path ~/.claude/skills"
         echo ""
         echo -e "  ${COLOR_BOLD}Cursor / Windsurf / other IDEs${COLOR_RESET}"
         echo -e "    Copy SKILL.md content into your IDE's rules/instructions file."
