@@ -308,9 +308,16 @@ if ! check_prerequisites "$TARGET"; then
     exit 1
 fi
 
-# Verify the Kubernetes API is reachable before starting any deployment
-if ! check_cluster_reachability; then
-    exit 1
+# Verify the Kubernetes API is reachable before starting any deployment.
+# Skip this check when target=kind and the installer is going to run — the
+# installer creates the Kind cluster as part of Step 1, so the API does not
+# need to exist yet. Only check when the cluster must already be present:
+#   - --skip-installer is set (stack already deployed, cluster must be up)
+#   - target is not kind (openshift etc. require a pre-existing cluster)
+if [[ "$SKIP_INSTALLER" == "true" || "$TARGET" != "kind" ]]; then
+    if ! check_cluster_reachability; then
+        exit 1
+    fi
 fi
 
 # Resolve container runtime — prefer docker, fall back to podman
