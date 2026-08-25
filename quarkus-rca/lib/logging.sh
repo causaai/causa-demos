@@ -163,37 +163,30 @@ log_error() {
 #        stop_spinner
 ################################################################################
 SPINNER_PID=""
-_SPINNER_STOP_FILE=""
 
 start_spinner() {
     local message="$1"
     local spinners=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
-    # Use a temp file as a stop flag — avoids signal/process-group issues
-    _SPINNER_STOP_FILE="$(mktemp /tmp/.spinner_stop.XXXXXX)"
     (
+        trap 'exit 0' TERM INT
         set +e
         local i=0
-        while [[ -f "${_SPINNER_STOP_FILE}" ]]; do
+        while true; do
             printf "\r${COLOR_CYAN}${COLOR_BOLD}${message} ${spinners[$((i % ${#spinners[@]}))]}${COLOR_RESET}" > /dev/tty 2>/dev/null
             sleep 0.1
             i=$(( i + 1 ))
         done
-        printf "\r\033[K" > /dev/tty 2>/dev/null
     ) &
     SPINNER_PID=$!
 }
 
 stop_spinner() {
-    if [[ -n "${_SPINNER_STOP_FILE:-}" ]]; then
-        rm -f "${_SPINNER_STOP_FILE}" 2>/dev/null || true
-        _SPINNER_STOP_FILE=""
-    fi
     if [[ -n "${SPINNER_PID:-}" ]]; then
         kill "${SPINNER_PID}" 2>/dev/null || true
         wait "${SPINNER_PID}" 2>/dev/null || true
+        printf "\r\033[K" > /dev/tty 2>/dev/null || true
         SPINNER_PID=""
     fi
-    printf "\r\033[K" > /dev/tty 2>/dev/null
     return 0
 }
 

@@ -374,15 +374,8 @@ if [[ "$SKIP_INSTALLER" == "false" ]]; then
     # ---------------------------------------------------------------------------
     # 1b: Run install.sh with --target kind and image overrides
     # ---------------------------------------------------------------------------
-    # Images are provided explicitly so the installer uses exactly what we want:
-    #   causa backend:     quay.io/rh-ee-shesaxen/causa-backend:adc-fix
-    #   causa mcp:         quay.io/bmenghan/causa-mcp-server:latest
-    #   k8s mcp server:    quay.io/containers/kubernetes_mcp_server:v0.0.62
-    # async-profiler, async-profiler-mcp, quarkus-mcp images are not yet
-    # available — install.sh skips them gracefully (non-fatal warnings).
-    #
-    # To permanently change the images, edit images.env in this directory.
-    # The images below are loaded from images.env at script startup (set -a).
+    # Images are loaded from images.env at script startup (set -a) and passed
+    # as explicit flags to install.sh. To change any image, edit images.env.
     # ---------------------------------------------------------------------------
     {
         echo ""
@@ -402,6 +395,8 @@ if [[ "$SKIP_INSTALLER" == "false" ]]; then
         _INSTALL_ARGS+=(--causa-backend-image "$CAUSA_BACKEND_IMAGE")
     [[ -n "${CAUSA_MCP_IMAGE:-}" ]] && \
         _INSTALL_ARGS+=(--causa-mcp-image "$CAUSA_MCP_IMAGE")
+    [[ -n "${JAFRA_MCP_IMAGE:-}" ]] && \
+        _INSTALL_ARGS+=(--jafra-mcp-image "$JAFRA_MCP_IMAGE")
     [[ -n "${ASYNC_PROFILER_IMAGE:-}" ]] && \
         _INSTALL_ARGS+=(--async-profiler-image "$ASYNC_PROFILER_IMAGE")
     [[ -n "${ASYNC_PROFILER_MCP_IMAGE:-}" ]] && \
@@ -411,8 +406,9 @@ if [[ "$SKIP_INSTALLER" == "false" ]]; then
 
     write_to_log_file "INFO" "Running: bash $INSTALL_SCRIPT ${_INSTALL_ARGS[*]}"
 
-    # Run install.sh — its output is tee'd to terminal AND log file
-    bash "$INSTALL_SCRIPT" "${_INSTALL_ARGS[@]}" \
+    # Run install.sh — use /usr/bin/env bash so it picks up the best bash on
+    # PATH (e.g. Homebrew bash 5) rather than hardcoding /bin/bash (macOS 3.2).
+    /usr/bin/env bash "$INSTALL_SCRIPT" "${_INSTALL_ARGS[@]}" \
         2>&1 | tee -a "$LOG_FILE"
     _install_rc=${PIPESTATUS[0]}
 
