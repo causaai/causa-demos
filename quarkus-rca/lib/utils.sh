@@ -1,8 +1,7 @@
 #!/bin/bash
 ################################################################################
 # Common Utilities — Quarkus RCA Demo
-#
-# with kubectl (no oc dependency).
+# Kind cluster / kubectl (no oc dependency).
 ################################################################################
 
 # Prevent multiple sourcing
@@ -50,6 +49,39 @@ check_required_commands() {
     return 0
 }
 
+# check_prerequisites <target>
+# Builds the required-command list for the given target, validates each command
+# is present, and validates cluster reachability when target is "kind" or
+# whenever the Kubernetes API must be reachable.
+check_prerequisites() {
+    local target="${1:-kind}"
+
+    local _cmds=("git" "kubectl" "python3")
+    if [[ "$target" == "kind" ]]; then
+        _cmds+=("kind")
+    fi
+
+    if ! check_required_commands "${_cmds[@]}"; then
+        log_error "Missing required commands. Please install them and try again."
+        return 1
+    fi
+    return 0
+}
+
+# check_cluster_reachability
+# Verifies the Kubernetes API server is reachable before deployment starts.
+# Prints a clear error and returns non-zero when the cluster is not available.
+check_cluster_reachability() {
+    if ! kubectl cluster-info >>"$LOG_FILE" 2>&1; then
+        log_error "Kubernetes API server is not reachable."
+        log_error "Ensure your cluster is running and your kubeconfig is correct."
+        log_error "  kind target: run 'kind create cluster' first, or check 'kubectl cluster-info'."
+        return 1
+    fi
+    log_file_only "Kubernetes cluster is reachable"
+    return 0
+}
+
 clone_repo() {
     local repo_url="$1"
     local target_dir="$2"
@@ -70,27 +102,30 @@ clone_repo() {
 
     if [[ -d "$target_dir" ]]; then
         cd "$target_dir" || return 1
+        local _update_ok=true
         if [[ -n "$branch" ]]; then
-            git fetch origin >>"$LOG_FILE" 2>&1 || {
-                log_error "Failed to fetch from origin in $target_dir"
-                cd - >/dev/null; return 1
-            }
-            git checkout "$branch" >>"$LOG_FILE" 2>&1 || {
-                log_error "Failed to checkout branch $branch in $target_dir"
-                cd - >/dev/null; return 1
-            }
-            git pull origin "$branch" >>"$LOG_FILE" 2>&1 || {
-                log_error "Failed to pull $branch from origin in $target_dir"
-                cd - >/dev/null; return 1
-            }
+            git fetch origin >>"$LOG_FILE" 2>&1 || _update_ok=false
+            if [[ "$_update_ok" == "true" ]]; then
+                git checkout "$branch" >>"$LOG_FILE" 2>&1 || _update_ok=false
+            fi
+            if [[ "$_update_ok" == "true" ]]; then
+                # PR refs (pr/N) and some SHA-pinned refs cannot be pulled;
+                # a non-zero exit here is non-fatal — checkout already has the ref.
+                git pull origin "$branch" >>"$LOG_FILE" 2>&1 || true
+            fi
         else
-            git pull >>"$LOG_FILE" 2>&1 || {
-                log_error "Failed to pull latest changes in $target_dir"
-                cd - >/dev/null; return 1
-            }
+            git pull >>"$LOG_FILE" 2>&1 || _update_ok=false
         fi
         cd - >/dev/null
-    else
+
+        if [[ "$_update_ok" == "false" ]]; then
+            # Update failed — discard stale clone and fall through to a fresh clone
+            log_file_only "Update failed for $target_dir — re-cloning from $repo_url"
+            rm -rf "$target_dir"
+        fi
+    fi
+
+    if [[ ! -d "$target_dir" ]]; then
         if ! git clone "$repo_url" "$target_dir" >>"$LOG_FILE" 2>&1; then
             log_error "Failed to clone $(basename "$target_dir") from $repo_url"
             return 1
@@ -175,6 +210,8 @@ export -f start_timer
 export -f get_elapsed_time
 export -f command_exists
 export -f check_required_commands
+export -f check_prerequisites
+export -f check_cluster_reachability
 export -f clone_repo
 export -f ensure_directory
 export -f check_namespace
