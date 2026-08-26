@@ -208,42 +208,113 @@ get_pod_status() {
 
 # tune_kind_node_sysctls
 #
-# Kind nodes share the host's sysctl namespace. inotify.max_user_instances
-# defaults to 128 on most Linux distros; repeated jafra-agent crash-loop
-# restarts exhaust it, causing EMFILE (OS error 24, "Too many open files").
+# Kind nodes share the Linux kernel's sysctl namespace for inotify.
+# inotify.max_user_instances defaults to 128 on most distros; repeated
+# jafra-agent crash-loop restarts exhaust it, causing EMFILE (OS error 24,
+# "Too many open files").
 #
-# This function checks the current values and exits 1 with a clear remediation
-# message if they are below the required minimums. The caller is responsible
-# for acting on the non-zero exit.
+# On Linux the check reads /proc/sys directly.
+# On macOS inotify lives inside the Docker/OrbStack/colima Linux VM, not on
+# the macOS host, so the check is run via "docker exec" against the kind node.
+# If the container runtime is unavailable the check is skipped with a warning.
+#
+# Compatible with bash 3.2+ (no associative arrays).
+# Returns 1 with a clear remediation message if limits are too low.
 tune_kind_node_sysctls() {
-    local -A _required=(
-        ["fs.inotify.max_user_instances"]=512
-        ["fs.inotify.max_user_watches"]=1048576
-    )
+    # Parallel arrays — compatible with bash 3.2 (no associative arrays)
+    local _keys="fs.inotify.max_user_instances fs.inotify.max_user_watches"
+    local _min_instances=512
+    local _min_watches=1048576
 
     local _needs_action=false
-    for _key in "${!_required[@]}"; do
-        local _want="${_required[$_key]}"
-        local _cur
-        _cur=$(cat "/proc/sys/${_key//.//}" 2>/dev/null || echo 0)
-        if [[ "$_cur" -lt "$_want" ]]; then
-            _needs_action=true
-            log_file_only "sysctl $_key is $_cur (minimum required: $_want)"
-        else
-            log_file_only "sysctl $_key = $_cur (ok)"
-        fi
-    done
+    local _os
+    _os=$(uname -s 2>/dev/null || echo "Linux")
 
-    if [[ "$_needs_action" == "true" ]]; then
-        log_error "Host inotify limits are too low for the jafra-agent."
-        log_error "The agent will crash with EMFILE (error 24: Too many open files)."
-        log_error "Run the following on your host before starting the demo:"
-        log_error "  sudo sysctl -w fs.inotify.max_user_instances=512"
-        log_error "  sudo sysctl -w fs.inotify.max_user_watches=1048576"
-        log_error "To persist across reboots, add to /etc/sysctl.d/99-kind.conf:"
-        log_error "  fs.inotify.max_user_instances = 512"
-        log_error "  fs.inotify.max_user_watches   = 1048576"
-        return 1
+    if [[ "$_os" == "Darwin" ]]; then
+        # macOS: inotify lives in the kind node's Linux VM.
+        # Resolve the kind node container name (first node returned by kind).
+        local _runtime=""
+        if command_exists docker; then
+            _runtime="docker"
+        elif command_exists podman; then
+            _runtime="podman"
+        fi
+
+        if [[ -z "$_runtime" ]]; then
+            log_file_only "WARN: no container runtime found on macOS — skipping inotify sysctl check"
+            log_file_only "If jafra-agent crashes with EMFILE, set inotify limits inside your Docker/OrbStack/colima VM."
+            return 0
+        fi
+
+        # Derive the kind node container name from NAMESPACE (set by caller).
+        local _node_container="${NAMESPACE:-causa-rca}-control-plane"
+
+        local _cur_instances _cur_watches
+        _cur_instances=$("$_runtime" exec "$_node_container" \
+            cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null || echo 0)
+        _cur_watches=$("$_runtime" exec "$_node_container" \
+            cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo 0)
+
+        # Strip any whitespace
+        _cur_instances=$(echo "$_cur_instances" | tr -d '[:space:]')
+        _cur_watches=$(echo "$_cur_watches" | tr -d '[:space:]')
+
+        if [[ "$_cur_instances" -lt "$_min_instances" ]] 2>/dev/null; then
+            _needs_action=true
+            log_file_only "sysctl fs.inotify.max_user_instances is $_cur_instances (minimum required: $_min_instances)"
+        else
+            log_file_only "sysctl fs.inotify.max_user_instances = $_cur_instances (ok)"
+        fi
+
+        if [[ "$_cur_watches" -lt "$_min_watches" ]] 2>/dev/null; then
+            _needs_action=true
+            log_file_only "sysctl fs.inotify.max_user_watches is $_cur_watches (minimum required: $_min_watches)"
+        else
+            log_file_only "sysctl fs.inotify.max_user_watches = $_cur_watches (ok)"
+        fi
+
+        if [[ "$_needs_action" == "true" ]]; then
+            log_error "inotify limits inside the kind node VM are too low for the jafra-agent."
+            log_error "The agent will crash with EMFILE (error 24: Too many open files)."
+            log_error "Run the following to fix (macOS — sets limits inside the Linux VM):"
+            log_error "  $_runtime exec --privileged $_node_container sysctl -w fs.inotify.max_user_instances=512"
+            log_error "  $_runtime exec --privileged $_node_container sysctl -w fs.inotify.max_user_watches=1048576"
+            log_error "Or configure your VM runtime (Docker Desktop / OrbStack / colima) to set:"
+            log_error "  fs.inotify.max_user_instances = 512"
+            log_error "  fs.inotify.max_user_watches   = 1048576"
+            return 1
+        fi
+    else
+        # Linux: read directly from /proc/sys
+        local _cur_instances _cur_watches
+        _cur_instances=$(cat /proc/sys/fs/inotify/max_user_instances 2>/dev/null || echo 0)
+        _cur_watches=$(cat /proc/sys/fs/inotify/max_user_watches 2>/dev/null || echo 0)
+
+        if [[ "$_cur_instances" -lt "$_min_instances" ]]; then
+            _needs_action=true
+            log_file_only "sysctl fs.inotify.max_user_instances is $_cur_instances (minimum required: $_min_instances)"
+        else
+            log_file_only "sysctl fs.inotify.max_user_instances = $_cur_instances (ok)"
+        fi
+
+        if [[ "$_cur_watches" -lt "$_min_watches" ]]; then
+            _needs_action=true
+            log_file_only "sysctl fs.inotify.max_user_watches is $_cur_watches (minimum required: $_min_watches)"
+        else
+            log_file_only "sysctl fs.inotify.max_user_watches = $_cur_watches (ok)"
+        fi
+
+        if [[ "$_needs_action" == "true" ]]; then
+            log_error "Host inotify limits are too low for the jafra-agent."
+            log_error "The agent will crash with EMFILE (error 24: Too many open files)."
+            log_error "Run the following on your host before starting the demo:"
+            log_error "  sudo sysctl -w fs.inotify.max_user_instances=512"
+            log_error "  sudo sysctl -w fs.inotify.max_user_watches=1048576"
+            log_error "To persist across reboots, add to /etc/sysctl.d/99-kind.conf:"
+            log_error "  fs.inotify.max_user_instances = 512"
+            log_error "  fs.inotify.max_user_watches   = 1048576"
+            return 1
+        fi
     fi
 
     log_install_success "inotify sysctls OK (max_user_instances and max_user_watches meet minimums)"
