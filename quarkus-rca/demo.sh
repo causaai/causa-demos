@@ -265,7 +265,7 @@ fi
 if [[ "$TERMINATE" == "true" ]]; then
     terminate_demo "$NAMESPACE" "$DEMO_DIR" "$SKIP_INSTALLER"
 
-    # Remove causa-rca from project-level .mcp.json
+    # Remove causa-rca from project-level .mcp.json (cross-IDE root)
     _MCP_JSON_PATH="${SCRIPT_DIR}/../.mcp.json"
     if [[ -f "$_MCP_JSON_PATH" ]]; then
         start_spinner "Removing Causa MCP from project .mcp.json..."
@@ -291,6 +291,35 @@ PYEOF
         stop_spinner
         if [[ $_remove_mcp_json_rc -eq 0 ]]; then
             log_install_success "Causa MCP removed from project .mcp.json"
+        fi
+    fi
+
+    # Remove causa-rca from Bob project-level .bob/mcp.json (if it exists)
+    _BOB_MCP_JSON_PATH="${SCRIPT_DIR}/../.bob/mcp.json"
+    if [[ -f "$_BOB_MCP_JSON_PATH" ]]; then
+        start_spinner "Removing Causa MCP from .bob/mcp.json..."
+        _remove_bob_mcp_rc=1
+        if command_exists python3; then
+            python3 - "$_BOB_MCP_JSON_PATH" << 'PYEOF'
+import json, sys
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    cfg.get("mcpServers", {}).pop("causa-rca", None)
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+    print("removed")
+except Exception as e:
+    print(f"warn: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+            _remove_bob_mcp_rc=$?
+        fi
+        stop_spinner
+        if [[ $_remove_bob_mcp_rc -eq 0 ]]; then
+            log_install_success "Causa MCP removed from .bob/mcp.json"
         fi
     fi
 
@@ -667,17 +696,31 @@ fi
 # Step 4: Register Causa MCP + install skill (optional)
 # ===========================================================================
 
-# ── 4a: Always write .mcp.json to the repo root ──────────────────────────
-# .mcp.json is the cross-IDE project-level MCP standard. Any IDE that
-# supports MCP (Claude shell, Cursor, Windsurf, VS Code Copilot, Gemini CLI)
-# auto-loads this file when the developer opens or cd's into the project —
-# no per-user setup required.
+# ── 4a: Write the correct MCP config file for the detected IDE ───────────
+# Bob IDE reads .bob/mcp.json; every other IDE (Claude Code CLI, Cursor,
+# Windsurf, VS Code Copilot, Gemini CLI) reads the cross-IDE .mcp.json at
+# the repo root. The two are mutually exclusive — we write exactly one.
 _MCP_JSON_PATH="${SCRIPT_DIR}/../.mcp.json"
-log_section "Step 4: Writing project-level .mcp.json"
-start_spinner "Writing .mcp.json to repo root..."
-_mcp_json_rc=1
-if command_exists python3; then
-    python3 - "$_MCP_JSON_PATH" "$CAUSA_MCP_URL" << 'PYEOF'
+_BOB_MCP_JSON_PATH="${SCRIPT_DIR}/../.bob/mcp.json"
+
+# Detect whether the user is configuring Bob
+_IS_BOB_SKILL_PATH=false
+if [[ -n "$SKILL_PATH" ]]; then
+    _expanded_skill_path="${SKILL_PATH/#\~/$HOME}"
+    if [[ "$_expanded_skill_path" == *"/.bob/"* || "$_expanded_skill_path" == *"/.bob" ]]; then
+        _IS_BOB_SKILL_PATH=true
+    fi
+fi
+
+log_section "Step 4: Writing project-level MCP config"
+
+# Helper: merge causa-rca entry into an existing or new JSON file
+_write_mcp_entry() {
+    local _target_path="$1"
+    local _target_dir
+    _target_dir="$(dirname "$_target_path")"
+    mkdir -p "$_target_dir"
+    python3 - "$_target_path" "$CAUSA_MCP_URL" << 'PYEOF'
 import json, sys, os
 path, url = sys.argv[1], sys.argv[2]
 cfg = {}
@@ -696,15 +739,65 @@ with open(path, "w") as f:
     f.write("\n")
 print("ok")
 PYEOF
-    _mcp_json_rc=$?
-fi
-stop_spinner
-if [[ $_mcp_json_rc -eq 0 ]]; then
-    log_install_success ".mcp.json written (${_MCP_JSON_PATH})"
-    write_to_log_file "INFO" ".mcp.json path: $_MCP_JSON_PATH"
+}
+
+if [[ "$_IS_BOB_SKILL_PATH" == "true" ]]; then
+    # Bob IDE: write .bob/mcp.json only
+    start_spinner "Writing .bob/mcp.json for Bob IDE..."
+    _bob_mcp_json_rc=1
+    if command_exists python3; then
+        _write_mcp_entry "$_BOB_MCP_JSON_PATH"
+        _bob_mcp_json_rc=$?
+    fi
+    stop_spinner
+    if [[ $_bob_mcp_json_rc -eq 0 ]]; then
+        log_install_success ".bob/mcp.json written (${_BOB_MCP_JSON_PATH})"
+        write_to_log_file "INFO" ".bob/mcp.json path: $_BOB_MCP_JSON_PATH"
+    else
+        log_file_only "Failed to write .bob/mcp.json — add manually via Bob Settings → MCP → Edit Project MCP"
+        log_validation_success ".bob/mcp.json (failed — add manually)"
+    fi
+elif [[ -n "$SKILL_PATH" ]]; then
+    # Explicit non-Bob skill path (e.g. Claude): write cross-IDE root .mcp.json only
+    start_spinner "Writing .mcp.json to repo root..."
+    _mcp_json_rc=1
+    if command_exists python3; then
+        _write_mcp_entry "$_MCP_JSON_PATH"
+        _mcp_json_rc=$?
+    fi
+    stop_spinner
+    if [[ $_mcp_json_rc -eq 0 ]]; then
+        log_install_success ".mcp.json written (${_MCP_JSON_PATH})"
+        write_to_log_file "INFO" ".mcp.json path: $_MCP_JSON_PATH"
+    else
+        log_file_only "Failed to write .mcp.json — add manually"
+        log_validation_success ".mcp.json (failed — add manually)"
+    fi
 else
-    log_file_only "Failed to write .mcp.json — add manually"
-    log_validation_success ".mcp.json (failed — add manually)"
+    # No --skill-path given: write both so any IDE works out of the box
+    start_spinner "Writing .mcp.json and .bob/mcp.json..."
+    _mcp_json_rc=1; _bob_mcp_json_rc=1
+    if command_exists python3; then
+        _write_mcp_entry "$_MCP_JSON_PATH"
+        _mcp_json_rc=$?
+        _write_mcp_entry "$_BOB_MCP_JSON_PATH"
+        _bob_mcp_json_rc=$?
+    fi
+    stop_spinner
+    if [[ $_mcp_json_rc -eq 0 ]]; then
+        log_install_success ".mcp.json written (${_MCP_JSON_PATH})"
+        write_to_log_file "INFO" ".mcp.json path: $_MCP_JSON_PATH"
+    else
+        log_file_only "Failed to write .mcp.json — add manually"
+        log_validation_success ".mcp.json (failed — add manually)"
+    fi
+    if [[ $_bob_mcp_json_rc -eq 0 ]]; then
+        log_install_success ".bob/mcp.json written (${_BOB_MCP_JSON_PATH})"
+        write_to_log_file "INFO" ".bob/mcp.json path: $_BOB_MCP_JSON_PATH"
+    else
+        log_file_only "Failed to write .bob/mcp.json — add manually via Bob Settings → MCP → Edit Project MCP"
+        log_validation_success ".bob/mcp.json (failed — add manually)"
+    fi
 fi
 
 # ── 4b: Install SKILL.md to user-supplied path (optional) ────────────────
@@ -875,7 +968,14 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
     echo ""
     echo -e "${COLOR_CYAN}Causa Backend:${COLOR_RESET} ${CAUSA_BACKEND_URL}/api/v1/diagnostics"
     echo -e "${COLOR_CYAN}Causa MCP:${COLOR_RESET}     ${CAUSA_MCP_URL}/mcp"
-    echo -e "${COLOR_CYAN}Project MCP config:${COLOR_RESET} ${SCRIPT_DIR}/../.mcp.json"
+    if [[ "$_IS_BOB_SKILL_PATH" == "true" ]]; then
+        echo -e "${COLOR_CYAN}Bob MCP config:${COLOR_RESET}     ${SCRIPT_DIR}/../.bob/mcp.json"
+    elif [[ -n "$SKILL_PATH" ]]; then
+        echo -e "${COLOR_CYAN}Project MCP config:${COLOR_RESET} ${SCRIPT_DIR}/../.mcp.json"
+    else
+        echo -e "${COLOR_CYAN}Project MCP config:${COLOR_RESET} ${SCRIPT_DIR}/../.mcp.json"
+        echo -e "${COLOR_CYAN}Bob MCP config:${COLOR_RESET}     ${SCRIPT_DIR}/../.bob/mcp.json"
+    fi
     echo ""
 
     # ── Skill setup summary ─────────────────────────────────────────────────
