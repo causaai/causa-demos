@@ -135,9 +135,15 @@ show_help() {
     echo "    -h                       Show this help message"
     echo ""
     echo "MCP server registration:"
-    echo "    .mcp.json is always written to the repo root. Any IDE that supports the"
-    echo "    cross-IDE MCP standard (Claude shell, Cursor, Windsurf, VS Code Copilot,"
-    echo "    Gemini CLI) auto-loads it — no per-user or per-IDE setup required."
+    echo "    The script writes MCP config based on --skill-path:"
+    echo "      --skill-path ~/.bob/skills   → writes .bob/mcp.json only (Bob IDE)"
+    echo "                                     removes stale causa-rca from .mcp.json"
+    echo "      --skill-path <other>         → writes .mcp.json only (cross-IDE root)"
+    echo "                                     removes stale causa-rca from .bob/mcp.json"
+    echo "      (no --skill-path)            → writes both .mcp.json and .bob/mcp.json"
+    echo "    Any IDE that supports the cross-IDE MCP standard (Claude Code CLI, Cursor,"
+    echo "    Windsurf, VS Code Copilot, Gemini CLI) auto-loads .mcp.json from the repo"
+    echo "    root. Bob reads .bob/mcp.json."
     echo ""
     echo "Skill installation:"
     echo "    Pass --skill-path <dir> to have the script copy SKILL.md to that location."
@@ -316,10 +322,14 @@ except Exception as e:
     sys.exit(1)
 PYEOF
             _remove_bob_mcp_rc=$?
+        else
+            write_to_log_file "WARN" "python3 not available — could not remove causa-rca from .bob/mcp.json; remove it manually"
         fi
         stop_spinner
         if [[ $_remove_bob_mcp_rc -eq 0 ]]; then
             log_install_success "Causa MCP removed from .bob/mcp.json"
+        else
+            log_file_only "Failed to remove causa-rca from .bob/mcp.json — remove it manually (python3 required)"
         fi
     fi
 
@@ -699,7 +709,11 @@ fi
 # ── 4a: Write the correct MCP config file for the detected IDE ───────────
 # Bob IDE reads .bob/mcp.json; every other IDE (Claude Code CLI, Cursor,
 # Windsurf, VS Code Copilot, Gemini CLI) reads the cross-IDE .mcp.json at
-# the repo root. The two are mutually exclusive — we write exactly one.
+# the repo root.
+# Routing:
+#   Bob skill path  → write .bob/mcp.json; remove stale entry from .mcp.json
+#   other skill path→ write .mcp.json; remove stale entry from .bob/mcp.json
+#   no --skill-path → write both (safe default for any IDE)
 _MCP_JSON_PATH="${SCRIPT_DIR}/../.mcp.json"
 _BOB_MCP_JSON_PATH="${SCRIPT_DIR}/../.bob/mcp.json"
 
@@ -742,7 +756,7 @@ PYEOF
 }
 
 if [[ "$_IS_BOB_SKILL_PATH" == "true" ]]; then
-    # Bob IDE: write .bob/mcp.json only
+    # Bob IDE: write .bob/mcp.json; remove stale entry from .mcp.json if present
     start_spinner "Writing .bob/mcp.json for Bob IDE..."
     _bob_mcp_json_rc=1
     if command_exists python3; then
@@ -757,8 +771,25 @@ if [[ "$_IS_BOB_SKILL_PATH" == "true" ]]; then
         log_file_only "Failed to write .bob/mcp.json — add manually via Bob Settings → MCP → Edit Project MCP"
         log_validation_success ".bob/mcp.json (failed — add manually)"
     fi
+    # Remove stale causa-rca from .mcp.json left by a previous non-Bob run
+    if [[ -f "$_MCP_JSON_PATH" ]] && command_exists python3; then
+        python3 - "$_MCP_JSON_PATH" << 'PYEOF' >>"$LOG_FILE" 2>&1 || true
+import json, sys, os
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    cfg.get("mcpServers", {}).pop("causa-rca", None)
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+except Exception:
+    pass
+PYEOF
+        write_to_log_file "INFO" "Removed stale causa-rca entry from .mcp.json (Bob run)"
+    fi
 elif [[ -n "$SKILL_PATH" ]]; then
-    # Explicit non-Bob skill path (e.g. Claude): write cross-IDE root .mcp.json only
+    # Explicit non-Bob skill path (e.g. Claude): write .mcp.json; remove stale entry from .bob/mcp.json if present
     start_spinner "Writing .mcp.json to repo root..."
     _mcp_json_rc=1
     if command_exists python3; then
@@ -772,6 +803,23 @@ elif [[ -n "$SKILL_PATH" ]]; then
     else
         log_file_only "Failed to write .mcp.json — add manually"
         log_validation_success ".mcp.json (failed — add manually)"
+    fi
+    # Remove stale causa-rca from .bob/mcp.json left by a previous Bob run
+    if [[ -f "$_BOB_MCP_JSON_PATH" ]] && command_exists python3; then
+        python3 - "$_BOB_MCP_JSON_PATH" << 'PYEOF' >>"$LOG_FILE" 2>&1 || true
+import json, sys, os
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+    cfg.get("mcpServers", {}).pop("causa-rca", None)
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+        f.write("\n")
+except Exception:
+    pass
+PYEOF
+        write_to_log_file "INFO" "Removed stale causa-rca entry from .bob/mcp.json (non-Bob run)"
     fi
 else
     # No --skill-path given: write both so any IDE works out of the box
