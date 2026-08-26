@@ -52,20 +52,21 @@ cd causa-demos/kind
 
 ### 2. Quarkus RCA Demo
 
-An end-to-end demo that deploys a **quarkus-perf** workload engineered for chaos testing, installs the full Causa RCA stack (Causa Backend, Causa MCP, Kubernetes MCP Server, PostgreSQL, Prometheus), configures LLM credentials (Vertex AI, Bob, Anthropic, OpenAI), and wires up **Bob IDE** or **Claude Desktop** for AI-powered root cause analysis.
+An end-to-end demo that deploys a **quarkus-perf** workload engineered for chaos testing, installs the full Causa RCA stack, configures LLM credentials, and wires up any MCP-capable AI assistant for AI-powered root cause analysis.
 
 **What the demo does:**
 
-- Provisions the target environment (`kind`, `openshift`, `vm`) and deploys the full Causa RCA stack via the [Quarkus RCA installer](https://github.com/causaai/installer)
-- Deploys **quarkus-perf** with chaos scenarios enabled (`large-response`, `idle-timeout`, `memory-cache`)
-- Pushes configurable LLM credentials (Vertex AI, Bob, Anthropic, OpenAI) to Causa Backend
-- Registers the Causa MCP server in your selected frontend assistant (Bob IDE or Claude Desktop) and installs the `causa-rca` skill
-- Prints ready-to-paste prompts for triggering RCA from any AI assistant
+- Provisions the target environment (`kind` or `openshift`) and deploys the full Causa RCA stack via the [Quarkus RCA installer](https://github.com/causaai/installer)
+- Deploys **quarkus-perf** with chaos scenarios enabled (`large-response`, `idle-timeout`, `memory-cache`) and starts a load-gen job
+- Pushes LLM credentials to Causa Backend (Vertex AI, Bob, Anthropic, OpenAI, and others)
+- Writes `.mcp.json` to the repo root — auto-loaded by Claude Code, Cursor, Windsurf, VS Code Copilot, and Gemini CLI
+- Optionally installs the `causa-rca` skill to Bob or Claude Code via `--skill-path`
+- Prints ready-to-paste RCA prompts
 
 **Prerequisites:**
 
 ```text
-kind      kubectl     docker (or podman)     git     python3
+kind      kubectl      docker (or podman)      git      python3
 ```
 
 **Quick start:**
@@ -76,7 +77,7 @@ cd causa-demos/quarkus-rca
 ./demo.sh
 ```
 
-See **[quarkus-rca/docs/SETUP.md](quarkus-rca/docs/SETUP.md)** for full prerequisites, LLM credential setup, CLI options, image overrides, Alertmanager configuration, and troubleshooting.
+See **[quarkus-rca/README.md](quarkus-rca/README.md)** for skill installation, LLM setup, and CLI options.
 
 **Cleanup:**
 
