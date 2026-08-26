@@ -320,6 +320,15 @@ if [[ "$SKIP_INSTALLER" == "true" || "$TARGET" != "kind" ]]; then
     fi
 fi
 
+# For kind targets, verify host inotify limits are sufficient for the
+# jafra-agent. kind nodes share the host sysctl namespace; low defaults
+# (max_user_instances=128) cause EMFILE crashes after repeated restarts.
+if [[ "$TARGET" == "kind" ]]; then
+    if ! tune_kind_node_sysctls; then
+        exit 1
+    fi
+fi
+
 # Resolve container runtime — prefer docker, fall back to podman
 if command_exists docker; then
     CONTAINER_RUNTIME="docker"

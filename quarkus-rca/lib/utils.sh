@@ -206,6 +206,50 @@ get_pod_status() {
     fi
 }
 
+# tune_kind_node_sysctls
+#
+# Kind nodes share the host's sysctl namespace. inotify.max_user_instances
+# defaults to 128 on most Linux distros; repeated jafra-agent crash-loop
+# restarts exhaust it, causing EMFILE (OS error 24, "Too many open files").
+#
+# This function checks the current values and exits 1 with a clear remediation
+# message if they are below the required minimums. The caller is responsible
+# for acting on the non-zero exit.
+tune_kind_node_sysctls() {
+    local -A _required=(
+        ["fs.inotify.max_user_instances"]=512
+        ["fs.inotify.max_user_watches"]=1048576
+    )
+
+    local _needs_action=false
+    for _key in "${!_required[@]}"; do
+        local _want="${_required[$_key]}"
+        local _cur
+        _cur=$(cat "/proc/sys/${_key//.//}" 2>/dev/null || echo 0)
+        if [[ "$_cur" -lt "$_want" ]]; then
+            _needs_action=true
+            log_file_only "sysctl $_key is $_cur (minimum required: $_want)"
+        else
+            log_file_only "sysctl $_key = $_cur (ok)"
+        fi
+    done
+
+    if [[ "$_needs_action" == "true" ]]; then
+        log_error "Host inotify limits are too low for the jafra-agent."
+        log_error "The agent will crash with EMFILE (error 24: Too many open files)."
+        log_error "Run the following on your host before starting the demo:"
+        log_error "  sudo sysctl -w fs.inotify.max_user_instances=512"
+        log_error "  sudo sysctl -w fs.inotify.max_user_watches=1048576"
+        log_error "To persist across reboots, add to /etc/sysctl.d/99-kind.conf:"
+        log_error "  fs.inotify.max_user_instances = 512"
+        log_error "  fs.inotify.max_user_watches   = 1048576"
+        return 1
+    fi
+
+    log_install_success "inotify sysctls OK (max_user_instances and max_user_watches meet minimums)"
+    return 0
+}
+
 export -f start_timer
 export -f get_elapsed_time
 export -f command_exists
@@ -219,3 +263,4 @@ export -f ensure_namespace
 export -f apply_manifest
 export -f wait_for_deployment
 export -f get_pod_status
+export -f tune_kind_node_sysctls
