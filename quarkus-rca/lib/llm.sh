@@ -33,7 +33,7 @@ readonly LLM_LIB_LOADED=1
 # credentials file exists. Sources LLM_ENV_FILE in a subshell so the parent
 # environment is not polluted. Exits with clear error messages on failure.
 #
-# Supported providers:  vertex-ai-anthropic  |  anthropic
+# Supported providers:  vertex-ai-anthropic  |  anthropic  |  bob
 # ---------------------------------------------------------------------------
 validate_llm_config() {
     local llm_env_file="$1"
@@ -52,13 +52,14 @@ validate_llm_config() {
     fi
 
     # Read values in subshells — never pollute the parent environment here.
-    local provider model_name location project_id creds_file api_key
-    provider=$(    bash -c "set -a; source \"$llm_env_file\"; echo \"\${LLM_PROVIDER:-}\"")
-    model_name=$(  bash -c "set -a; source \"$llm_env_file\"; echo \"\${LLM_MODEL_NAME:-}\"")
-    location=$(    bash -c "set -a; source \"$llm_env_file\"; echo \"\${VERTEX_LOCATION:-}\"")
-    project_id=$(  bash -c "set -a; source \"$llm_env_file\"; echo \"\${VERTEX_PROJECT_ID:-}\"")
-    creds_file=$(  bash -c "set -a; source \"$llm_env_file\"; eval echo \"\${GOOGLE_APPLICATION_CREDENTIALS:-}\"")
-    api_key=$(     bash -c "set -a; source \"$llm_env_file\"; echo \"\${LLM_API_KEY:-}\"")
+    local provider model_name location project_id creds_file api_key bob_shell_path
+    provider=$(       bash -c "set -a; source \"$llm_env_file\"; echo \"\${LLM_PROVIDER:-}\"")
+    model_name=$(     bash -c "set -a; source \"$llm_env_file\"; echo \"\${LLM_MODEL_NAME:-}\"")
+    location=$(       bash -c "set -a; source \"$llm_env_file\"; echo \"\${VERTEX_LOCATION:-}\"")
+    project_id=$(     bash -c "set -a; source \"$llm_env_file\"; echo \"\${VERTEX_PROJECT_ID:-}\"")
+    creds_file=$(     bash -c "set -a; source \"$llm_env_file\"; eval echo \"\${GOOGLE_APPLICATION_CREDENTIALS:-}\"")
+    api_key=$(        bash -c "set -a; source \"$llm_env_file\"; echo \"\${LLM_API_KEY:-}\"")
+    bob_shell_path=$( bash -c "set -a; source \"$llm_env_file\"; echo \"\${BOB_SHELL_PATH:-\${BOB_PATH:-}}\"")
 
     log_file_only "LLM validation: reading from $llm_env_file"
 
@@ -85,11 +86,18 @@ validate_llm_config() {
             [[ -z "$model_name" ]] && errors+=("LLM_MODEL_NAME is not set")
             [[ -z "$api_key"    ]] && errors+=("LLM_API_KEY is not set")
             ;;
+        bob)
+            # BOB_SHELL_PATH is optional — the backend defaults to 'bob' on PATH.
+            # LLM_API_KEY is required when Bob uses API-key authentication.
+            if [[ -n "$bob_shell_path" && ! -x "$bob_shell_path" ]]; then
+                errors+=("BOB_SHELL_PATH='$bob_shell_path' is not executable")
+            fi
+            ;;
         "")
             : # already captured above
             ;;
         *)
-            errors+=("LLM_PROVIDER='$provider' is not supported (supported: vertex-ai-anthropic, anthropic)")
+            errors+=("LLM_PROVIDER='$provider' is not supported (supported: vertex-ai-anthropic, anthropic, bob)")
             ;;
     esac
 
@@ -118,8 +126,9 @@ validate_llm_config() {
 #     /var/secrets/google/key.json via the GOOGLE_APPLICATION_CREDENTIALS
 #     env var (set in the deployment manifest).
 #
-#   anthropic:
+#   anthropic | bob:
 #     causa-llm-secrets — LLM_API_KEY stored as a K8s secret.
+#     (bob only creates this secret when LLM_API_KEY is set in llm.env)
 #
 # No-op (with a warning) if the credentials file is missing.
 # ---------------------------------------------------------------------------
@@ -173,7 +182,13 @@ create_llm_secrets() {
             fi
             ;;
 
-        anthropic)
+        anthropic|bob)
+            # bob only needs a secret when LLM_API_KEY is set (API-key auth).
+            if [[ "${LLM_PROVIDER:-}" == "bob" && -z "${LLM_API_KEY:-}" ]]; then
+                write_to_log_file "INFO" "create_llm_secrets: provider=bob with no LLM_API_KEY — no secret needed"
+                return 0
+            fi
+
             if kubectl get secret causa-llm-secrets \
                     -n "$namespace" >>"${LOG_FILE}" 2>&1; then
                 write_to_log_file "INFO" "causa-llm-secrets already exists in $namespace — skipping creation"
@@ -213,9 +228,10 @@ create_llm_secrets() {
 # installer has deployed it.
 #
 # Most keys posted here are non-sensitive (LLM_PROVIDER, LLM_MODEL_NAME,
-# VERTEX_PROJECT_ID, VERTEX_LOCATION).  Exception: when LLM_PROVIDER=anthropic
-# the API key (LLM_API_KEY) is also included in the payload because there is
-# no volume-mount path for it — the backend has no other way to receive it.
+# VERTEX_PROJECT_ID, VERTEX_LOCATION).  Exceptions:
+#   anthropic — LLM_API_KEY is included (no volume-mount path available).
+#   bob       — LLM_API_KEY (when set) and BOB_SHELL_PATH (when set) are
+#               included so the backend knows how to invoke Bob.
 #
 # The GCP credential is NOT POSTed — it is already available to the backend
 # via the K8s Secret volume mount created in Phase 1.
@@ -267,13 +283,18 @@ vertex_loc  = os.getenv("VERTEX_LOCATION",   "").strip()
 if vertex_proj: configs["VERTEX_PROJECT_ID"] = vertex_proj
 if vertex_loc:  configs["VERTEX_LOCATION"]   = vertex_loc
 
-# Anthropic direct — API key is sensitive but must go via the API (no volume mount)
-api_key = os.getenv("LLM_API_KEY", "").strip()
-if api_key: configs["LLM_API_KEY"] = api_key
+# Anthropic / Bob — API key must go via the API (no volume mount for these providers)
+provider = configs.get("LLM_PROVIDER", "")
+if provider in ("anthropic", "bob"):
+    api_key = os.getenv("LLM_API_KEY", "").strip()
+    if api_key:
+        configs["LLM_API_KEY"] = api_key
 
-# Bob provider
-bob_path = os.getenv("BOB_SHELL_PATH", os.getenv("BOB_PATH", "")).strip()
-if bob_path: configs["BOB_SHELL_PATH"] = bob_path
+# Bob provider — optional path to the bob binary
+if provider == "bob":
+    bob_path = os.getenv("BOB_SHELL_PATH", os.getenv("BOB_PATH", "")).strip()
+    if bob_path:
+        configs["BOB_SHELL_PATH"] = bob_path
 
 print(json.dumps({"configs": configs}))
 PYEOF
@@ -292,7 +313,14 @@ print('true' if json.loads(sys.argv[1]).get('configs') else 'false')
         return 0
     fi
 
-    write_to_log_file "INFO" "Pushing LLM config (provider: ${LLM_PROVIDER:-}, model: ${LLM_MODEL_NAME:-})"
+    # Log what is being pushed (keys only — values are redacted from the log).
+    local _payload_keys
+    _payload_keys=$(python3 -c "
+import json, sys
+keys = list(json.loads(sys.argv[1]).get('configs', {}).keys())
+print(', '.join(keys))
+" "$payload" 2>/dev/null || echo "unknown")
+    write_to_log_file "INFO" "Pushing LLM config (provider: ${LLM_PROVIDER:-}, keys: $_payload_keys)"
 
     local causa_pod
     causa_pod=$(kubectl get pods \

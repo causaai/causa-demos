@@ -75,6 +75,7 @@ NAMESPACE="causa-rca"
 TARGET="${TARGET:-kind}"
 SKILL_PATH=""
 TERMINATE=false
+DELETE_CLUSTER=false
 SKIP_INSTALLER=false
 DEMO_DIR="$SCRIPT_DIR/artifacts"
 
@@ -111,7 +112,7 @@ CAUSA_BACKEND_URL="http://localhost:30001"
 show_help() {
     echo "Quarkus RCA Demo Script"
     echo ""
-    echo "Usage: $0 [--target TARGET] [-n namespace] [--skill-path DIR] [-t] [--skip-installer] [--installer-url URL] [--installer-branch BRANCH] [--chaos-lab-url URL] [--chaos-lab-branch BRANCH] [-h]"
+    echo "Usage: $0 [--target TARGET] [-n namespace] [--skill-path DIR] [-t] [--delete-cluster] [--skip-installer] [--installer-url URL] [--installer-branch BRANCH] [--chaos-lab-url URL] [--chaos-lab-branch BRANCH] [-h]"
     echo ""
     echo "Options:"
     echo "    --target TARGET          Target platform: kind, openshift, vm, etc. (default: kind)"
@@ -125,6 +126,8 @@ show_help() {
     echo "                               --skill-path ~/.bob/skills        (Bob)"
     echo "                               --skill-path ~/.claude/skills     (Claude Code)"
     echo "    -t                       Terminate mode: clean up all resources"
+    echo "    --delete-cluster         Also delete the Kind cluster when terminating (kind target only)."
+    echo "                             Must be used together with -t."
     echo "    --skip-installer         Skip running install.sh (use when stack is already deployed)"
     echo "    --installer-url URL      Git URL of the installer repo"
     echo "                             Default: https://github.com/causaai/installer"
@@ -185,8 +188,11 @@ show_help() {
     echo "    # Skip installer (stack already running)"
     echo "    $0 --skip-installer"
     echo ""
-    echo "    # Tear down everything"
+    echo "    # Tear down everything (keep cluster)"
     echo "    $0 -t"
+    echo ""
+    echo "    # Tear down everything including the Kind cluster"
+    echo "    $0 -t --delete-cluster"
     echo ""
     echo "Prerequisites:  kind (if target=kind)  kubectl  docker or podman  git  python3"
     echo ""
@@ -207,6 +213,7 @@ while [[ $# -gt 0 ]]; do
             [[ -z "${2:-}" ]] && { echo "ERROR: value required for --skill-path" >&2; exit 1; }
             SKILL_PATH="$2"; shift 2 ;;
         -t)               TERMINATE=true; shift ;;
+        --delete-cluster) DELETE_CLUSTER=true; shift ;;
         --skip-installer) SKIP_INSTALLER=true; shift ;;
         --installer-url)
             [[ -z "${2:-}" ]] && { echo "ERROR: value required for --installer-url" >&2; exit 1; }
@@ -320,7 +327,7 @@ PYEOF
 # Terminate mode
 # ---------------------------------------------------------------------------
 if [[ "$TERMINATE" == "true" ]]; then
-    terminate_demo "$NAMESPACE" "$DEMO_DIR" "$SKIP_INSTALLER"
+    terminate_demo "$NAMESPACE" "$DEMO_DIR" "$SKIP_INSTALLER" "$DELETE_CLUSTER"
 
     # Remove causa-rca from project-level .mcp.json (cross-IDE root)
     _MCP_JSON_PATH="${SCRIPT_DIR}/../.mcp.json"
@@ -396,31 +403,29 @@ fi
 export CONTAINER_RUNTIME
 write_to_log_file "INFO" "Container runtime: $CONTAINER_RUNTIME"
 
+# llm.env is required — it tells Causa Backend which LLM to use for RCA.
+# Fail here, inside the prerequisites block, so the user gets a single clear
+# error before any infrastructure work starts.
+if [[ ! -f "$LLM_ENV_FILE" ]]; then
+    log_error "llm.env not found: $LLM_ENV_FILE"
+    log_error "  Copy the example and fill in your credentials:"
+    log_error "    cp $SCRIPT_DIR/llm.env.example $SCRIPT_DIR/llm.env"
+    log_error "  Then edit llm.env and set LLM_PROVIDER plus the required fields"
+    log_error "  for your provider (vertex-ai-anthropic, anthropic, or bob)."
+    exit 1
+fi
+
 log_validation_success "Validating Prerequisites"
 
 # Phase 1: validate LLM config and create K8s secrets BEFORE the installer
 # runs, so causa-backend has its credentials secret available on first startup.
-if [[ -f "$LLM_ENV_FILE" ]]; then
-    if ! validate_llm_config "$LLM_ENV_FILE"; then
-        exit 1
-    fi
-    log_validation_success "LLM Configuration"
+if ! validate_llm_config "$LLM_ENV_FILE"; then
+    exit 1
 fi
+log_validation_success "LLM Configuration"
 
 ensure_directory "$DEMO_DIR"
-cd "$DEMO_DIR"
-
-# Phase 1 (cont): create the GCP/LLM K8s secret now, before the installer.
-# On a fresh Kind cluster the namespace does not exist yet — the installer
-# creates it in Step 1. If the namespace is missing, kubectl will fail and
-# create_llm_secrets logs a non-fatal warning and continues. The installer
-# will then create the namespace and the secret can be re-created manually
-# or on the next run, but in practice the installer creates the namespace
-# before starting causa-backend so the missing secret is harmless for the
-# initial startup window.
-if [[ -f "$LLM_ENV_FILE" ]]; then
-    create_llm_secrets "$LLM_ENV_FILE" "$NAMESPACE"
-fi
+cd "$DEMO_DIR" || { log_error "Failed to change directory to $DEMO_DIR"; exit 1; }
 
 # ===========================================================================
 # Step 1: Run install.sh (Causa RCA stack on kind)
@@ -506,6 +511,12 @@ else
     INSTALLER_DIR="${INSTALLER_DIR:-}"
 fi
 
+# Phase 1 (cont): create the GCP/LLM K8s secret now that the cluster and
+# the Causa namespace exist. Moved here (after install.sh) so kubectl has a
+# live API server to talk to — running it before the Kind cluster is
+# provisioned caused connection-timeout errors.
+create_llm_secrets "$LLM_ENV_FILE" "$NAMESPACE"
+
 # ===========================================================================
 # Step 1.5: Clone chaos-lab and locate quarkus-perf manifests
 # ===========================================================================
@@ -551,7 +562,11 @@ if [[ -f "$LOAD_GEN_MANIFEST" ]]; then
 fi
 
 start_spinner "Creating namespace $NAMESPACE..."
-ensure_namespace "$NAMESPACE" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' >>"$LOG_FILE"
+if ! ensure_namespace "$NAMESPACE"; then
+    stop_spinner
+    log_error "Failed to ensure namespace $NAMESPACE — cannot deploy workload"
+    exit 1
+fi
 stop_spinner
 
 # ── Deploy quarkus-perf ──────────────────────────────────────────────────
