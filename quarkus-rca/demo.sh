@@ -262,18 +262,16 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Terminate mode
+# MCP JSON helpers — defined early so both the terminate path and the install
+# path can call them without a forward-reference problem.
 # ---------------------------------------------------------------------------
-if [[ "$TERMINATE" == "true" ]]; then
-    terminate_demo "$NAMESPACE" "$DEMO_DIR" "$SKIP_INSTALLER"
 
-    # Remove causa-rca from project-level .mcp.json (cross-IDE root)
-    _MCP_JSON_PATH="${SCRIPT_DIR}/../.mcp.json"
-    if [[ -f "$_MCP_JSON_PATH" ]]; then
-        start_spinner "Removing Causa MCP from project .mcp.json..."
-        _remove_mcp_json_rc=1
-        if command_exists python3; then
-            python3 - "$_MCP_JSON_PATH" << 'PYEOF'
+# Helper: remove the causa-rca entry from an existing JSON file.
+# Returns 0 on success, 1 on any error (including python3 failure).
+# No-op (exit 0) if the file does not exist or has no causa-rca key.
+_remove_mcp_entry() {
+    local _target_path="$1"
+    python3 - "$_target_path" << 'PYEOF'
 import json, sys
 path = sys.argv[1]
 try:
@@ -288,6 +286,49 @@ except Exception as e:
     print(f"warn: {e}", file=sys.stderr)
     sys.exit(1)
 PYEOF
+}
+
+# Helper: merge causa-rca entry into an existing or new JSON file.
+# Creates the target directory if it does not exist; returns 1 if mkdir fails.
+_write_mcp_entry() {
+    local _target_path="$1"
+    local _target_dir
+    _target_dir="$(dirname "$_target_path")"
+    mkdir -p "$_target_dir" || return 1
+    python3 - "$_target_path" "$CAUSA_MCP_URL" << 'PYEOF'
+import json, sys, os
+path, url = sys.argv[1], sys.argv[2]
+cfg = {}
+if os.path.isfile(path):
+    try:
+        with open(path) as f:
+            cfg = json.load(f)
+    except json.JSONDecodeError:
+        cfg = {}
+cfg.setdefault("mcpServers", {})["causa-rca"] = {
+    "type": "http",
+    "url": url + "/mcp"
+}
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+print("ok")
+PYEOF
+}
+
+# ---------------------------------------------------------------------------
+# Terminate mode
+# ---------------------------------------------------------------------------
+if [[ "$TERMINATE" == "true" ]]; then
+    terminate_demo "$NAMESPACE" "$DEMO_DIR" "$SKIP_INSTALLER"
+
+    # Remove causa-rca from project-level .mcp.json (cross-IDE root)
+    _MCP_JSON_PATH="${SCRIPT_DIR}/../.mcp.json"
+    if [[ -f "$_MCP_JSON_PATH" ]]; then
+        start_spinner "Removing Causa MCP from project .mcp.json..."
+        _remove_mcp_json_rc=1
+        if command_exists python3; then
+            _remove_mcp_entry "$_MCP_JSON_PATH"
             _remove_mcp_json_rc=$?
         fi
         stop_spinner
@@ -302,21 +343,7 @@ PYEOF
         start_spinner "Removing Causa MCP from .bob/mcp.json..."
         _remove_bob_mcp_rc=1
         if command_exists python3; then
-            python3 - "$_BOB_MCP_JSON_PATH" << 'PYEOF'
-import json, sys
-path = sys.argv[1]
-try:
-    with open(path) as f:
-        cfg = json.load(f)
-    cfg.get("mcpServers", {}).pop("causa-rca", None)
-    with open(path, "w") as f:
-        json.dump(cfg, f, indent=2)
-        f.write("\n")
-    print("removed")
-except Exception as e:
-    print(f"warn: {e}", file=sys.stderr)
-    sys.exit(1)
-PYEOF
+            _remove_mcp_entry "$_BOB_MCP_JSON_PATH"
             _remove_bob_mcp_rc=$?
         else
             write_to_log_file "WARN" "python3 not available — could not remove causa-rca from .bob/mcp.json; remove it manually"
@@ -384,9 +411,13 @@ ensure_directory "$DEMO_DIR"
 cd "$DEMO_DIR"
 
 # Phase 1 (cont): create the GCP/LLM K8s secret now, before the installer.
-# The namespace may not exist yet — ensure_namespace is called inside
-# create_llm_secrets if needed, but for Kind the installer creates it so
-# we pass it and let the function guard against it not existing yet.
+# On a fresh Kind cluster the namespace does not exist yet — the installer
+# creates it in Step 1. If the namespace is missing, kubectl will fail and
+# create_llm_secrets logs a non-fatal warning and continues. The installer
+# will then create the namespace and the secret can be re-created manually
+# or on the next run, but in practice the installer creates the namespace
+# before starting causa-backend so the missing secret is harmless for the
+# initial startup window.
 if [[ -f "$LLM_ENV_FILE" ]]; then
     create_llm_secrets "$LLM_ENV_FILE" "$NAMESPACE"
 fi
@@ -602,33 +633,6 @@ fi
 
 log_section "Step 4: Writing project-level MCP config"
 
-# Helper: merge causa-rca entry into an existing or new JSON file
-_write_mcp_entry() {
-    local _target_path="$1"
-    local _target_dir
-    _target_dir="$(dirname "$_target_path")"
-    mkdir -p "$_target_dir"
-    python3 - "$_target_path" "$CAUSA_MCP_URL" << 'PYEOF'
-import json, sys, os
-path, url = sys.argv[1], sys.argv[2]
-cfg = {}
-if os.path.isfile(path):
-    try:
-        with open(path) as f:
-            cfg = json.load(f)
-    except json.JSONDecodeError:
-        cfg = {}
-cfg.setdefault("mcpServers", {})["causa-rca"] = {
-    "type": "http",
-    "url": url + "/mcp"
-}
-with open(path, "w") as f:
-    json.dump(cfg, f, indent=2)
-    f.write("\n")
-print("ok")
-PYEOF
-}
-
 if [[ "$_IS_BOB_SKILL_PATH" == "true" ]]; then
     # Bob IDE: write .bob/mcp.json; remove stale entry from .mcp.json if present
     start_spinner "Writing .bob/mcp.json for Bob IDE..."
@@ -647,19 +651,7 @@ if [[ "$_IS_BOB_SKILL_PATH" == "true" ]]; then
     fi
     # Remove stale causa-rca from .mcp.json left by a previous non-Bob run
     if [[ -f "$_MCP_JSON_PATH" ]] && command_exists python3; then
-        python3 - "$_MCP_JSON_PATH" << 'PYEOF' >>"$LOG_FILE" 2>&1 || true
-import json, sys, os
-path = sys.argv[1]
-try:
-    with open(path) as f:
-        cfg = json.load(f)
-    cfg.get("mcpServers", {}).pop("causa-rca", None)
-    with open(path, "w") as f:
-        json.dump(cfg, f, indent=2)
-        f.write("\n")
-except Exception:
-    pass
-PYEOF
+        _remove_mcp_entry "$_MCP_JSON_PATH" >>"$LOG_FILE" 2>&1 || true
         write_to_log_file "INFO" "Removed stale causa-rca entry from .mcp.json (Bob run)"
     fi
 elif [[ -n "$SKILL_PATH" ]]; then
@@ -680,19 +672,7 @@ elif [[ -n "$SKILL_PATH" ]]; then
     fi
     # Remove stale causa-rca from .bob/mcp.json left by a previous Bob run
     if [[ -f "$_BOB_MCP_JSON_PATH" ]] && command_exists python3; then
-        python3 - "$_BOB_MCP_JSON_PATH" << 'PYEOF' >>"$LOG_FILE" 2>&1 || true
-import json, sys, os
-path = sys.argv[1]
-try:
-    with open(path) as f:
-        cfg = json.load(f)
-    cfg.get("mcpServers", {}).pop("causa-rca", None)
-    with open(path, "w") as f:
-        json.dump(cfg, f, indent=2)
-        f.write("\n")
-except Exception:
-    pass
-PYEOF
+        _remove_mcp_entry "$_BOB_MCP_JSON_PATH" >>"$LOG_FILE" 2>&1 || true
         write_to_log_file "INFO" "Removed stale causa-rca entry from .bob/mcp.json (non-Bob run)"
     fi
 else
@@ -892,11 +872,11 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
     echo -e "${COLOR_CYAN}Causa MCP:${COLOR_RESET}     ${CAUSA_MCP_URL}/mcp"
     if [[ "$_IS_BOB_SKILL_PATH" == "true" ]]; then
         echo -e "${COLOR_CYAN}Bob MCP config:${COLOR_RESET}     ${SCRIPT_DIR}/../.bob/mcp.json"
-    elif [[ -n "$SKILL_PATH" ]]; then
-        echo -e "${COLOR_CYAN}Project MCP config:${COLOR_RESET} ${SCRIPT_DIR}/../.mcp.json"
     else
         echo -e "${COLOR_CYAN}Project MCP config:${COLOR_RESET} ${SCRIPT_DIR}/../.mcp.json"
-        echo -e "${COLOR_CYAN}Bob MCP config:${COLOR_RESET}     ${SCRIPT_DIR}/../.bob/mcp.json"
+        if [[ -z "$SKILL_PATH" ]]; then
+            echo -e "${COLOR_CYAN}Bob MCP config:${COLOR_RESET}     ${SCRIPT_DIR}/../.bob/mcp.json"
+        fi
     fi
     echo ""
 

@@ -128,7 +128,11 @@ create_llm_secrets() {
     local namespace="$2"
 
     # Source so variables are available to the rest of this function.
-    # set -a ensures they're exported for any child processes too.
+    # set -a ensures they're exported for any child processes (kubectl) too.
+    # Side-effect: LLM_API_KEY, GOOGLE_APPLICATION_CREDENTIALS, etc. are
+    # exported into the parent shell for the rest of the run.  This is
+    # intentional — kubectl needs them — but differs from validate_llm_config
+    # which uses subshells.  See the configure_llm_runtime docstring for details.
     set -a
     # shellcheck disable=SC1090
     source "$llm_env_file"
@@ -205,14 +209,25 @@ create_llm_secrets() {
 # ---------------------------------------------------------------------------
 # configure_llm_runtime  LLM_ENV_FILE  NAMESPACE
 #
-# Phase 2 — POST non-sensitive config to the running causa-backend after the
+# Phase 2 — POST config keys to the running causa-backend after the
 # installer has deployed it.
 #
-# Only non-sensitive keys are sent here:
-#   LLM_PROVIDER, LLM_MODEL_NAME, VERTEX_PROJECT_ID, VERTEX_LOCATION
+# Most keys posted here are non-sensitive (LLM_PROVIDER, LLM_MODEL_NAME,
+# VERTEX_PROJECT_ID, VERTEX_LOCATION).  Exception: when LLM_PROVIDER=anthropic
+# the API key (LLM_API_KEY) is also included in the payload because there is
+# no volume-mount path for it — the backend has no other way to receive it.
 #
 # The GCP credential is NOT POSTed — it is already available to the backend
 # via the K8s Secret volume mount created in Phase 1.
+#
+# NOTE: both create_llm_secrets and configure_llm_runtime source llm.env
+# directly into the current shell with `set -a` (required so kubectl/curl
+# child processes can read the exported variables).  This means LLM_API_KEY,
+# GOOGLE_APPLICATION_CREDENTIALS, etc. remain exported for the rest of the
+# demo.sh process.  validate_llm_config uses subshells to avoid this, but
+# the secret-creation and config-push phases cannot — they need the vars
+# live in the environment.  Be aware of this if you add callers that do not
+# expect those variables to be set.
 #
 # Uses kubectl exec + curl (same as the installer pattern) so no external
 # route is needed — works identically on Kind and OpenShift.
@@ -222,6 +237,8 @@ configure_llm_runtime() {
     local namespace="$2"
 
     # Source with set -a so all vars are exported for child processes.
+    # Side-effect: LLM_API_KEY, GOOGLE_APPLICATION_CREDENTIALS, etc. are
+    # exported into the parent shell for the rest of the run (see docstring).
     set -a
     # shellcheck disable=SC1090
     source "$llm_env_file"
@@ -314,6 +331,3 @@ print('true' if json.loads(sys.argv[1]).get('configs') else 'false')
     fi
 }
 
-export -f validate_llm_config
-export -f create_llm_secrets
-export -f configure_llm_runtime
