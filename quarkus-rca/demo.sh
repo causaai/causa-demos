@@ -42,6 +42,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOGGING_FILE="$SCRIPT_DIR/lib/logging.sh"
 UTILS_FILE="$SCRIPT_DIR/lib/utils.sh"
 UNINSTALL_FILE="$SCRIPT_DIR/lib/uninstall.sh"
+LLM_FILE="$SCRIPT_DIR/lib/llm.sh"
 
 IMAGES_ENV_FILE="$SCRIPT_DIR/images.env"
 if [[ -f "$IMAGES_ENV_FILE" ]]; then
@@ -52,7 +53,7 @@ if [[ -f "$IMAGES_ENV_FILE" ]]; then
     echo -e "\033[0;36m[images.env]\033[0m Image overrides loaded from: $IMAGES_ENV_FILE"
 fi
 
-for _f in "$LOGGING_FILE" "$UTILS_FILE" "$UNINSTALL_FILE"; do
+for _f in "$LOGGING_FILE" "$UTILS_FILE" "$UNINSTALL_FILE" "$LLM_FILE"; do
     if [[ ! -f "$_f" ]]; then
         echo "ERROR: $(basename "$_f") not found at $_f"
         exit 1
@@ -62,6 +63,7 @@ done
 source "$LOGGING_FILE"
 source "$UTILS_FILE"
 source "$UNINSTALL_FILE"
+source "$LLM_FILE"
 
 _demo_exit_trap() { trap '' INT TERM; stop_spinner; exit 130; }
 trap '_demo_exit_trap' INT TERM
@@ -224,15 +226,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---------------------------------------------------------------------------
-# Load llm.env early
+# LLM env path — used by validate_llm_config / create_llm_secrets / configure_llm_runtime
 # ---------------------------------------------------------------------------
-_LLM_ENV_FILE="$SCRIPT_DIR/llm.env"
-if [[ -f "$_LLM_ENV_FILE" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$_LLM_ENV_FILE"
-    set +a
-fi
+LLM_ENV_FILE="$SCRIPT_DIR/llm.env"
 
 # ---------------------------------------------------------------------------
 # Initialise logging
@@ -375,8 +371,25 @@ write_to_log_file "INFO" "Container runtime: $CONTAINER_RUNTIME"
 
 log_validation_success "Validating Prerequisites"
 
+# Phase 1: validate LLM config and create K8s secrets BEFORE the installer
+# runs, so causa-backend has its credentials secret available on first startup.
+if [[ -f "$LLM_ENV_FILE" ]]; then
+    if ! validate_llm_config "$LLM_ENV_FILE"; then
+        exit 1
+    fi
+    log_validation_success "LLM Configuration"
+fi
+
 ensure_directory "$DEMO_DIR"
 cd "$DEMO_DIR"
+
+# Phase 1 (cont): create the GCP/LLM K8s secret now, before the installer.
+# The namespace may not exist yet — ensure_namespace is called inside
+# create_llm_secrets if needed, but for Kind the installer creates it so
+# we pass it and let the function guard against it not existing yet.
+if [[ -f "$LLM_ENV_FILE" ]]; then
+    create_llm_secrets "$LLM_ENV_FILE" "$NAMESPACE"
+fi
 
 # ===========================================================================
 # Step 1: Run install.sh (Causa RCA stack on kind)
@@ -552,155 +565,16 @@ fi
 
 
 # ===========================================================================
-# Step 3: Configure Causa Backend — LLM credentials
+# Step 3: Configure Causa Backend (LLM) — Phase 2
 # ===========================================================================
-# Sources llm.env, creates the causa-gcp-credentials K8s Secret from
-# causa-gcp-key.json, and pushes LLM config to Causa via
-# POST /api/v1/configs (default Causa cooldown is preserved).
-#
-# Non-fatal: if no LLM provider is configured, Causa performs RCA using
-# heuristics without LLM config.
+# Phase 1 (create_llm_secrets) already ran before the installer.
+# Phase 2 posts the non-sensitive config keys to the now-running backend.
+# The GCP credential is NOT posted here — it is already available to the
+# backend via the K8s Secret created in Phase 1 and the
+# GOOGLE_APPLICATION_CREDENTIALS env var set in the deployment manifest.
 # ===========================================================================
 log_section "Step 3: Configuring Causa Backend (LLM)"
-
-if [[ -f "$_LLM_ENV_FILE" ]]; then
-    write_to_log_file "INFO" "Using LLM config loaded from: $_LLM_ENV_FILE"
-else
-    write_to_log_file "INFO" "llm.env not found — using exported environment variables"
-    write_to_log_file "INFO" "Copy llm.env.example to llm.env and fill in values to enable LLM RCA"
-fi
-
-# ── Auto-create causa-gcp-credentials K8s Secret from local key file ─────
-_GCP_KEY_FILE="$SCRIPT_DIR/causa-gcp-key.json"
-if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" && -f "${GOOGLE_APPLICATION_CREDENTIALS}" ]]; then
-    _GCP_KEY_FILE="${GOOGLE_APPLICATION_CREDENTIALS}"
-fi
-
-if [[ "${LLM_PROVIDER:-}" == "vertex-ai-anthropic" || -n "${VERTEX_PROJECT_ID:-}" ]]; then
-    if kubectl get secret causa-gcp-credentials \
-            -n "$NAMESPACE" >>"$LOG_FILE" 2>&1; then
-        write_to_log_file "INFO" "causa-gcp-credentials secret already exists in $NAMESPACE"
-    elif [[ -f "$_GCP_KEY_FILE" ]]; then
-        start_spinner "Creating causa-gcp-credentials secret from $(basename "$_GCP_KEY_FILE")..."
-        if kubectl create secret generic causa-gcp-credentials \
-                --from-file="key.json=$_GCP_KEY_FILE" \
-                -n "$NAMESPACE" >>"$LOG_FILE" 2>&1; then
-            stop_spinner
-            log_install_success "causa-gcp-credentials secret created"
-        else
-            stop_spinner
-            log_file_only "Failed to create causa-gcp-credentials secret — check $LOG_FILE"
-        fi
-    else
-        write_to_log_file "WARN" "GCP key file not found at $_GCP_KEY_FILE"
-        write_to_log_file "WARN" "Place the GCP service-account key there to enable Vertex AI LLM RCA"
-    fi
-fi
-
-# ── Read GCP key back as a single-line base64 blob from the K8s Secret ───
-_GCP_B64=""
-if [[ "${LLM_PROVIDER:-}" == "vertex-ai-anthropic" || -n "${VERTEX_PROJECT_ID:-}" ]]; then
-    _GCP_B64=$(kubectl get secret causa-gcp-credentials \
-        -n "$NAMESPACE" \
-        -o "jsonpath={.data.key\.json}" \
-        2>>"$LOG_FILE" | tr -d '[:space:]' || true)
-    if [[ -z "$_GCP_B64" && -f "$_GCP_KEY_FILE" ]]; then
-        _GCP_B64=$(base64 < "$_GCP_KEY_FILE" | tr -d '[:space:]')
-    fi
-fi
-
-# ── Build POST /api/v1/configs payload ───────────────────────────────────
-# Use python3 to build a valid, properly escaped JSON payload for all providers
-_CONFIG_PAYLOAD=$(python3 - << 'PYEOF'
-import os, json
-
-configs = {}
-
-# Check provider and general LLM settings
-provider = os.getenv("LLM_PROVIDER", "").strip()
-model = os.getenv("LLM_MODEL_NAME", "").strip()
-api_key = os.getenv("LLM_API_KEY", "").strip()
-endpoint = os.getenv("LLM_ENDPOINT", "").strip()
-temperature = os.getenv("LLM_TEMPERATURE", "").strip()
-
-if provider:
-    configs["LLM_PROVIDER"] = provider
-if model:
-    configs["LLM_MODEL_NAME"] = model
-if api_key:
-    configs["LLM_API_KEY"] = api_key
-if endpoint:
-    configs["LLM_ENDPOINT"] = endpoint
-if temperature:
-    configs["LLM_TEMPERATURE"] = temperature
-
-# Vertex AI specific
-vertex_proj = os.getenv("VERTEX_PROJECT_ID", "").strip()
-vertex_loc = os.getenv("VERTEX_LOCATION", "").strip()
-gcp_b64 = os.getenv("_GCP_B64", "").strip()
-
-if vertex_proj:
-    configs["VERTEX_PROJECT_ID"] = vertex_proj
-if vertex_loc:
-    configs["VERTEX_LOCATION"] = vertex_loc
-if gcp_b64:
-    configs["GOOGLE_APPLICATION_CREDENTIALS"] = gcp_b64
-
-# Bob / custom provider specific
-bob_shell_path = os.getenv("BOB_SHELL_PATH", os.getenv("BOB_PATH", "")).strip()
-if bob_shell_path:
-    configs["BOB_SHELL_PATH"] = bob_shell_path
-
-print(json.dumps({"configs": configs}))
-PYEOF
-)
-
-# ── Push LLM config to Causa Backend if configured ───────────────────────
-_HAS_LLM_CONFIG=$(python3 -c "import json, os; p=json.loads('''$_CONFIG_PAYLOAD''').get('configs',{}); print('true' if len(p) > 0 else 'false')")
-
-if [[ "$_HAS_LLM_CONFIG" == "true" ]]; then
-    write_to_log_file "INFO" "Pushing LLM config (provider: ${LLM_PROVIDER:-auto}, model: ${LLM_MODEL_NAME:-default}) to Causa"
-
-    # ── Find running Causa Backend pod ───────────────────────────────────────
-    _CAUSA_POD=$(kubectl get pods \
-        -l "app=causa-backend" \
-        -n "$NAMESPACE" \
-        --field-selector="status.phase=Running" \
-        -o "jsonpath={.items[0].metadata.name}" \
-        2>>"$LOG_FILE" || true)
-
-    if [[ -z "$_CAUSA_POD" ]]; then
-        write_to_log_file "WARN" "Causa Backend pod not running — skipping config push (RCA will run without LLM)"
-    else
-        start_spinner "Pushing config to Causa Backend (up to 5 attempts)..."
-        _cfg_rc=1
-        for _attempt in 1 2 3 4 5; do
-            _cfg_rc=0
-            kubectl exec -n "$NAMESPACE" "$_CAUSA_POD" -- \
-                curl -sf --max-time 10 \
-                -X POST "http://localhost:8080/api/v1/configs" \
-                -H "Content-Type: application/json" \
-                -d "$_CONFIG_PAYLOAD" \
-                >>"$LOG_FILE" 2>&1 || _cfg_rc=$?
-
-            if [[ $_cfg_rc -eq 0 ]]; then
-                break
-            fi
-            write_to_log_file "INFO" "Config push attempt ${_attempt}/5 failed (rc=${_cfg_rc}) — retrying in 10s..."
-            [[ $_attempt -lt 5 ]] && sleep 10
-        done
-        stop_spinner
-        if [[ $_cfg_rc -eq 0 ]]; then
-            log_install_success "Causa Backend configured (LLM config pushed)"
-        else
-            log_file_only "Config push failed after 5 attempts (non-fatal — RCA will run without LLM)"
-            log_validation_success "Causa config push (failed — check $LOG_FILE)"
-        fi
-    fi
-else
-    write_to_log_file "INFO" "No LLM provider configured — Causa Backend will use default settings / heuristic RCA"
-    log_validation_success "Causa Backend LLM config (skipped — no provider set in llm.env)"
-fi
+configure_llm_runtime "$LLM_ENV_FILE" "$NAMESPACE"
 
 # ===========================================================================
 # Step 4: Register Causa MCP + install skill (optional)
