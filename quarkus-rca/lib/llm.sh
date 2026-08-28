@@ -148,10 +148,15 @@ create_llm_secrets() {
 
     local creds_file
     creds_file=$(eval echo "${GOOGLE_APPLICATION_CREDENTIALS:-}")
-    # Also accept a local causa-gcp-key.json next to the script as a fallback
+    # Resolve relative paths against llm.env's directory, not the CWD.
+    # (CWD may have changed to $DEMO_DIR by the time this function runs.)
+    if [[ -n "$creds_file" && "$creds_file" != /* ]]; then
+        creds_file="$(dirname "$llm_env_file")/$creds_file"
+    fi
+    # Also accept a local causa-gcp-key.json next to llm.env as a fallback.
     if [[ -z "$creds_file" || ! -f "$creds_file" ]]; then
-        if [[ -f "$SCRIPT_DIR/causa-gcp-key.json" ]]; then
-            creds_file="$SCRIPT_DIR/causa-gcp-key.json"
+        if [[ -f "$(dirname "$llm_env_file")/causa-gcp-key.json" ]]; then
+            creds_file="$(dirname "$llm_env_file")/causa-gcp-key.json"
         fi
     fi
 
