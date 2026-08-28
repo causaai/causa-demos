@@ -229,12 +229,13 @@ create_llm_secrets() {
 #
 # Most keys posted here are non-sensitive (LLM_PROVIDER, LLM_MODEL_NAME,
 # VERTEX_PROJECT_ID, VERTEX_LOCATION).  Exceptions:
+#   vertex-ai-anthropic — GOOGLE_APPLICATION_CREDENTIALS is included as the
+#               base64-encoded contents of the credentials file.  The backend
+#               deployment has no volume mount for the GCP secret, so the
+#               credential must reach it via this config endpoint.
 #   anthropic — LLM_API_KEY is included (no volume-mount path available).
 #   bob       — LLM_API_KEY (when set) and BOB_SHELL_PATH (when set) are
 #               included so the backend knows how to invoke Bob.
-#
-# The GCP credential is NOT POSTed — it is already available to the backend
-# via the K8s Secret volume mount created in Phase 1.
 #
 # NOTE: both create_llm_secrets and configure_llm_runtime source llm.env
 # directly into the current shell with `set -a` (required so kubectl/curl
@@ -260,10 +261,10 @@ configure_llm_runtime() {
     source "$llm_env_file"
     set +a
 
-    # Build the payload — only non-sensitive keys.
+    # Build the payload.
     local payload
     payload=$(python3 - << 'PYEOF'
-import os, json
+import os, json, base64
 
 configs = {}
 
@@ -283,8 +284,15 @@ vertex_loc  = os.getenv("VERTEX_LOCATION",   "").strip()
 if vertex_proj: configs["VERTEX_PROJECT_ID"] = vertex_proj
 if vertex_loc:  configs["VERTEX_LOCATION"]   = vertex_loc
 
+# Vertex AI — base64-encode the service account key file and POST it as
+# GOOGLE_APPLICATION_CREDENTIALS (the backend deployment has no volume mount).
+if provider == "vertex-ai-anthropic":
+    creds_path = os.path.expandvars(os.path.expanduser(os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()))
+    if creds_path and os.path.isfile(creds_path):
+        with open(creds_path, "rb") as f:
+            configs["GOOGLE_APPLICATION_CREDENTIALS"] = base64.b64encode(f.read()).decode("utf-8")
+
 # Anthropic / Bob — API key must go via the API (no volume mount for these providers)
-provider = configs.get("LLM_PROVIDER", "")
 if provider in ("anthropic", "bob"):
     api_key = os.getenv("LLM_API_KEY", "").strip()
     if api_key:
@@ -356,6 +364,130 @@ print(', '.join(keys))
     else
         log_file_only "Config push failed after 5 attempts (non-fatal — RCA will run without LLM)"
         log_validation_success "Causa config push (failed — check ${LOG_FILE})"
+    fi
+
+    # For vertex-ai-anthropic the Google ADC library resolves credentials via
+    # the GOOGLE_APPLICATION_CREDENTIALS *environment variable* at runtime —
+    # it does not read the value from the /api/v1/configs store.  The secret
+    # was already created by create_llm_secrets, so we just need to:
+    #   1. Mount it into the causa-backend pod at /var/secrets/google/key.json
+    #   2. Set GOOGLE_APPLICATION_CREDENTIALS to that path in the container env
+    # We patch the live Deployment here so this is always applied, even on
+    # --skip-installer runs or when the installer did not include the mount.
+    if [[ "${LLM_PROVIDER:-}" == "vertex-ai-anthropic" ]]; then
+        _patch_vertex_ai_credential_mount "$namespace"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# _patch_vertex_ai_credential_mount  NAMESPACE
+#
+# Patches the causa-backend Deployment to:
+#   • Mount the causa-gcp-credentials secret at /var/secrets/google
+#   • Set GOOGLE_APPLICATION_CREDENTIALS=/var/secrets/google/key.json
+#
+# Idempotent — checks whether the mount already exists before patching.
+# Rolls out the new pod and waits up to 120s for it to become ready.
+# Non-fatal: logs a warning and returns 0 on any failure so the rest of
+# the demo continues (RCA may fail at runtime, but setup does not abort).
+# ---------------------------------------------------------------------------
+_patch_vertex_ai_credential_mount() {
+    local namespace="$1"
+
+    # Check whether the volume mount is already present — if so, skip.
+    local existing_mount
+    existing_mount=$(kubectl get deployment causa-backend \
+        -n "$namespace" \
+        -o jsonpath='{.spec.template.spec.volumes[?(@.name=="gcp-credentials")].name}' \
+        2>>"${LOG_FILE}" || true)
+
+    if [[ "$existing_mount" == "gcp-credentials" ]]; then
+        write_to_log_file "INFO" "_patch_vertex_ai_credential_mount: volume already present — skipping patch"
+        return 0
+    fi
+
+    # Verify the secret exists before patching.
+    if ! kubectl get secret causa-gcp-credentials \
+            -n "$namespace" >>"${LOG_FILE}" 2>&1; then
+        write_to_log_file "WARN" "_patch_vertex_ai_credential_mount: causa-gcp-credentials secret not found in $namespace — skipping mount patch"
+        return 0
+    fi
+
+    start_spinner "Patching causa-backend with GCP credential mount..."
+
+    local patch_rc=0
+    kubectl patch deployment causa-backend \
+        -n "$namespace" \
+        --type=json \
+        -p '[
+          {
+            "op": "add",
+            "path": "/spec/template/spec/volumes/-",
+            "value": {
+              "name": "gcp-credentials",
+              "secret": { "secretName": "causa-gcp-credentials" }
+            }
+          },
+          {
+            "op": "add",
+            "path": "/spec/template/spec/containers/0/volumeMounts/-",
+            "value": {
+              "name": "gcp-credentials",
+              "mountPath": "/var/secrets/google",
+              "readOnly": true
+            }
+          },
+          {
+            "op": "add",
+            "path": "/spec/template/spec/containers/0/env/-",
+            "value": {
+              "name": "GOOGLE_APPLICATION_CREDENTIALS",
+              "value": "/var/secrets/google/key.json"
+            }
+          }
+        ]' >>"${LOG_FILE}" 2>&1 || patch_rc=$?
+
+    stop_spinner
+
+    if [[ $patch_rc -ne 0 ]]; then
+        write_to_log_file "WARN" "_patch_vertex_ai_credential_mount: kubectl patch failed (rc=$patch_rc) — Vertex AI ADC will not find credentials at runtime"
+        log_validation_success "GCP credential mount patch (failed — check ${LOG_FILE})"
+        return 0
+    fi
+
+    log_install_success "causa-backend patched with GCP credential volume mount"
+
+    # Delete the old pod so the new ReplicaSet pod (with the mount) starts
+    # immediately instead of waiting for the rolling-update deadlock on a
+    # single-node cluster where memory is tight.
+    local old_pod
+    old_pod=$(kubectl get pods \
+        -l "app=causa-backend" \
+        -n "$namespace" \
+        --field-selector="status.phase=Running" \
+        -o "jsonpath={.items[0].metadata.name}" \
+        2>>"${LOG_FILE}" || true)
+
+    if [[ -n "$old_pod" ]]; then
+        start_spinner "Restarting causa-backend pod ($old_pod)..."
+        kubectl delete pod "$old_pod" -n "$namespace" >>"${LOG_FILE}" 2>&1 || true
+        stop_spinner
+        write_to_log_file "INFO" "Deleted old causa-backend pod $old_pod to free memory for rolling update"
+    fi
+
+    # Wait for the new pod to be ready (up to 120s).
+    start_spinner "Waiting for causa-backend to be ready after credential patch (up to 120s)..."
+    local wait_rc=0
+    kubectl rollout status deployment/causa-backend \
+        -n "$namespace" \
+        --timeout=120s >>"${LOG_FILE}" 2>&1 || wait_rc=$?
+    stop_spinner
+
+    if [[ $wait_rc -eq 0 ]]; then
+        log_install_success "causa-backend restarted and ready with GCP credentials"
+    else
+        write_to_log_file "WARN" "_patch_vertex_ai_credential_mount: rollout did not complete within 120s (rc=$wait_rc) — pod may still be starting"
+        log_validation_success "causa-backend rollout (timed out — check: kubectl get pods -n $namespace)"
     fi
 }
 
