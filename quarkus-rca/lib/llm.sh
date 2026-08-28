@@ -170,6 +170,7 @@ create_llm_secrets() {
                 return 0
             fi
 
+            # Create GCP secret once kind cluster is up or causa is deployed
             start_spinner "Creating causa-gcp-credentials secret..."
             if kubectl create secret generic causa-gcp-credentials \
                     --from-file="key.json=$creds_file" \
