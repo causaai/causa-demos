@@ -213,7 +213,7 @@ while [[ $# -gt 0 ]]; do
             [[ -z "${2:-}" ]] && { echo "ERROR: value required for --skill-path" >&2; exit 1; }
             SKILL_PATH="$2"; shift 2 ;;
         -t)               TERMINATE=true; shift ;;
-        --delete-cluster) DELETE_CLUSTER=true; shift ;;
+        --delete-cluster) [[ "$TERMINATE" == "true" ]] || { echo "ERROR: --delete-cluster requires -t" >&2; exit 1; }; DELETE_CLUSTER=true; shift ;;
         --skip-installer) SKIP_INSTALLER=true; shift ;;
         --installer-url)
             [[ -z "${2:-}" ]] && { echo "ERROR: value required for --installer-url" >&2; exit 1; }
@@ -641,7 +641,7 @@ _BOB_MCP_JSON_PATH="${SCRIPT_DIR}/../.bob/mcp.json"
 _IS_BOB_SKILL_PATH=false
 if [[ -n "$SKILL_PATH" ]]; then
     _expanded_skill_path="${SKILL_PATH/#\~/$HOME}"
-    if [[ "$_expanded_skill_path" == *"/.bob/"* || "$_expanded_skill_path" == *"/.bob" ]]; then
+    if [[ "$_expanded_skill_path" == *"/.bob/"* || "$_expanded_skill_path" == *"/.bob" || "$_expanded_skill_path" == ".bob/"* ]]; then
         _IS_BOB_SKILL_PATH=true
     fi
 fi

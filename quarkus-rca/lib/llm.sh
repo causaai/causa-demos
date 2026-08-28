@@ -15,11 +15,7 @@
 #
 #   configure_llm_runtime  LLM_ENV_FILE  NAMESPACE
 #     Phase 2 — called AFTER the installer.
-#     POSTs only the non-sensitive config keys (LLM_PROVIDER, LLM_MODEL_NAME,
-#     VERTEX_PROJECT_ID, VERTEX_LOCATION) to POST /api/v1/configs.
-#     The GCP credential reaches the backend via the K8s Secret created in
-#     Phase 1 and the GOOGLE_APPLICATION_CREDENTIALS env var set in the
-#     causa-backend deployment — it is never POSTed through the API.
+#     POSTs config keys to /api/v1/configs. GCP credentials are never POSTed.
 ################################################################################
 
 # Source guard
@@ -58,6 +54,9 @@ validate_llm_config() {
     location=$(       bash -c "set -a; source \"$llm_env_file\"; echo \"\${VERTEX_LOCATION:-}\"")
     project_id=$(     bash -c "set -a; source \"$llm_env_file\"; echo \"\${VERTEX_PROJECT_ID:-}\"")
     creds_file=$(     bash -c "set -a; source \"$llm_env_file\"; eval echo \"\${GOOGLE_APPLICATION_CREDENTIALS:-}\"")
+    if [[ -n "$creds_file" && "$creds_file" != /* ]]; then
+        creds_file="$(dirname "$llm_env_file")/$creds_file"
+    fi
     api_key=$(        bash -c "set -a; source \"$llm_env_file\"; echo \"\${LLM_API_KEY:-}\"")
     bob_shell_path=$( bash -c "set -a; source \"$llm_env_file\"; echo \"\${BOB_SHELL_PATH:-\${BOB_PATH:-}}\"")
 
@@ -165,9 +164,9 @@ create_llm_secrets() {
             fi
 
             if [[ ! -f "$creds_file" ]]; then
-                write_to_log_file "WARN" "GCP credentials file not found at $creds_file"
-                write_to_log_file "WARN" "Set GOOGLE_APPLICATION_CREDENTIALS in llm.env or place causa-gcp-key.json next to demo.sh"
-                return 0
+                write_to_log_file "ERROR" "GCP credentials file not found at $creds_file"
+                write_to_log_file "ERROR" "Set GOOGLE_APPLICATION_CREDENTIALS in llm.env or place causa-gcp-key.json next to demo.sh"
+                return 1
             fi
 
             # Create GCP secret once kind cluster is up or causa is deployed
@@ -180,6 +179,7 @@ create_llm_secrets() {
             else
                 stop_spinner
                 log_file_only "Failed to create causa-gcp-credentials — check ${LOG_FILE}"
+                return 1
             fi
             ;;
 
@@ -213,6 +213,7 @@ create_llm_secrets() {
             else
                 stop_spinner
                 log_file_only "Failed to create causa-llm-secrets — check ${LOG_FILE}"
+                return 1
             fi
             ;;
 
@@ -228,15 +229,16 @@ create_llm_secrets() {
 # Phase 2 — POST config keys to the running causa-backend after the
 # installer has deployed it.
 #
-# Most keys posted here are non-sensitive (LLM_PROVIDER, LLM_MODEL_NAME,
+# Keys posted here are non-sensitive (LLM_PROVIDER, LLM_MODEL_NAME,
 # VERTEX_PROJECT_ID, VERTEX_LOCATION).  Exceptions:
-#   vertex-ai-anthropic — GOOGLE_APPLICATION_CREDENTIALS is included as the
-#               base64-encoded contents of the credentials file.  The backend
-#               deployment has no volume mount for the GCP secret, so the
-#               credential must reach it via this config endpoint.
 #   anthropic — LLM_API_KEY is included (no volume-mount path available).
 #   bob       — LLM_API_KEY (when set) and BOB_SHELL_PATH (when set) are
 #               included so the backend knows how to invoke Bob.
+#
+# vertex-ai-anthropic — GOOGLE_APPLICATION_CREDENTIALS is NOT posted here.
+#   The credential reaches the backend exclusively via the K8s Secret
+#   (created by create_llm_secrets) and the volume mount applied by
+#   _patch_vertex_ai_credential_mount.
 #
 # NOTE: both create_llm_secrets and configure_llm_runtime source llm.env
 # directly into the current shell with `set -a` (required so kubectl/curl
@@ -284,14 +286,6 @@ vertex_proj = os.getenv("VERTEX_PROJECT_ID", "").strip()
 vertex_loc  = os.getenv("VERTEX_LOCATION",   "").strip()
 if vertex_proj: configs["VERTEX_PROJECT_ID"] = vertex_proj
 if vertex_loc:  configs["VERTEX_LOCATION"]   = vertex_loc
-
-# Vertex AI — base64-encode the service account key file and POST it as
-# GOOGLE_APPLICATION_CREDENTIALS (the backend deployment has no volume mount).
-if provider == "vertex-ai-anthropic":
-    creds_path = os.path.expandvars(os.path.expanduser(os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()))
-    if creds_path and os.path.isfile(creds_path):
-        with open(creds_path, "rb") as f:
-            configs["GOOGLE_APPLICATION_CREDENTIALS"] = base64.b64encode(f.read()).decode("utf-8")
 
 # Anthropic / Bob — API key must go via the API (no volume mount for these providers)
 if provider in ("anthropic", "bob"):
