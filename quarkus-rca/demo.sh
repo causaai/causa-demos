@@ -5,22 +5,26 @@
 # End-to-end demo that:
 #
 #   Step 1 — Runs install.sh from the quarkus-rca installer branch
-#             Provisions: Kind cluster, Prometheus, k8s-mcp-server, Causa Backend,
-#             Causa MCP, PostgreSQL (async-profiler & quarkus-mcp skipped — images TBD)
+#             Provisions: Kind cluster (or OpenShift), Prometheus, k8s-mcp-server,
+#             Causa Backend, Causa MCP, PostgreSQL.
+#             Pass --target openshift to deploy onto an existing OpenShift cluster.
 #
 #   Step 2 — Deploys the quarkus-perf workload + load-gen job
-#             into the causa-rca namespace on the kind cluster
+#             into the causa-rca namespace on the target cluster.
+#             Uses deploy-openshift.yaml when --target openshift is set.
 #
 #   Step 3 — Sources llm.env, creates credentials Secret, and pushes
 #             LLM config to Causa via POST /api/v1/configs
 #
-#   Step 4 — Writes .mcp.json to the repo root (cross-IDE MCP standard;
-#             auto-loaded by Claude shell, Cursor, Windsurf, VS Code Copilot,
-#             Gemini CLI and others — no per-user setup required).
+#   Step 4 — Writes .mcp.json / .bob/mcp.json to the repo root when
+#             target=kind (cross-IDE MCP standard).
+#             When target=openshift the Causa MCP URL is cluster-hosted;
+#             .mcp.json writing is skipped and manual instructions are printed.
 #             Optionally installs the causa-rca SKILL.md to a user-supplied
 #             path via --skill-path <dir>.
 #
-#   Step 5 — Prints ready prompts and skill setup instructions
+#   Step 5 — Prints ready prompts, MCP registration instructions, and
+#             skill setup instructions
 #
 # Usage:  ./demo.sh [OPTIONS]
 # Run with -h for full option list.
@@ -327,7 +331,7 @@ PYEOF
 # Terminate mode
 # ---------------------------------------------------------------------------
 if [[ "$TERMINATE" == "true" ]]; then
-    terminate_demo "$NAMESPACE" "$DEMO_DIR" "$SKIP_INSTALLER" "$DELETE_CLUSTER"
+    terminate_demo "$NAMESPACE" "$DEMO_DIR" "$SKIP_INSTALLER" "$DELETE_CLUSTER" "$TARGET"
 
     # Remove causa-rca from project-level .mcp.json (cross-IDE root)
     _MCP_JSON_PATH="${SCRIPT_DIR}/../.mcp.json"
@@ -384,7 +388,7 @@ fi
 #   - --skip-installer is set (stack already deployed, cluster must be up)
 #   - target is not kind (openshift etc. require a pre-existing cluster)
 if [[ "$SKIP_INSTALLER" == "true" || "$TARGET" != "kind" ]]; then
-    if ! check_cluster_reachability; then
+    if ! check_cluster_reachability "$TARGET"; then
         exit 1
     fi
 fi
@@ -460,19 +464,19 @@ if [[ "$SKIP_INSTALLER" == "false" ]]; then
     fi
 
     # ---------------------------------------------------------------------------
-    # 1b: Run install.sh with --target kind and image overrides
+    # 1b: Run install.sh with --target $TARGET and image overrides
     # ---------------------------------------------------------------------------
     # Images are loaded from images.env at script startup (set -a) and passed
     # as explicit flags to install.sh. To change any image, edit images.env.
     # ---------------------------------------------------------------------------
     {
         echo ""
-        echo -e "${COLOR_CYAN}Running install.sh --target kind ...${COLOR_RESET}"
+        echo -e "${COLOR_CYAN}Running install.sh --target ${TARGET} ...${COLOR_RESET}"
         echo ""
     } >/dev/tty 2>/dev/null || true
 
     _INSTALL_ARGS=(
-        --target kind
+        --target "${TARGET}"
         -n "${NAMESPACE}"
     )
 
@@ -537,14 +541,24 @@ log_install_success "chaos-lab cloned (branch: $CHAOS_LAB_BRANCH)"
 # ===========================================================================
 log_section "Step 2: Deploying quarkus-perf workload"
 
-WORKLOAD_MANIFEST="$CHAOS_LAB_DIR/$QUARKUS_PERF_SUBDIR/manifests/deploy-kind.yaml"
+# Select the correct manifest for the target platform.
+# Preference order for openshift: deploy-openshift.yaml → deploy.yaml
+# Preference order for kind/other: deploy-kind.yaml → deploy.yaml
+if [[ "$TARGET" == "openshift" ]]; then
+    WORKLOAD_MANIFEST="$CHAOS_LAB_DIR/$QUARKUS_PERF_SUBDIR/manifests/deploy-openshift.yaml"
+    if [[ ! -f "$WORKLOAD_MANIFEST" ]]; then
+        WORKLOAD_MANIFEST="$CHAOS_LAB_DIR/$QUARKUS_PERF_SUBDIR/manifests/deploy.yaml"
+    fi
+else
+    WORKLOAD_MANIFEST="$CHAOS_LAB_DIR/$QUARKUS_PERF_SUBDIR/manifests/deploy-kind.yaml"
+    if [[ ! -f "$WORKLOAD_MANIFEST" ]]; then
+        WORKLOAD_MANIFEST="$CHAOS_LAB_DIR/$QUARKUS_PERF_SUBDIR/manifests/deploy.yaml"
+    fi
+fi
+
 LOAD_GEN_MANIFEST="$CHAOS_LAB_DIR/$QUARKUS_PERF_SUBDIR/manifests/load-gen-job.yaml"
 WORKLOAD_RENDERED_MANIFEST="$DEMO_DIR/quarkus-perf-deploy.rendered.yaml"
 LOAD_GEN_RENDERED_MANIFEST="$DEMO_DIR/quarkus-perf-load-gen.rendered.yaml"
-
-if [[ ! -f "$WORKLOAD_MANIFEST" ]]; then
-    WORKLOAD_MANIFEST="$CHAOS_LAB_DIR/$QUARKUS_PERF_SUBDIR/manifests/deploy.yaml"
-fi
 
 if [[ ! -f "$WORKLOAD_MANIFEST" ]]; then
     log_error "Workload manifest not found in chaos-lab under $CHAOS_LAB_DIR/$QUARKUS_PERF_SUBDIR/manifests"
@@ -611,6 +625,56 @@ fi
 
 
 # ===========================================================================
+# Step 2.5: Patch causa-backend with the quarkus-perf metrics base URL
+# ===========================================================================
+# CAUSA_MCP_QUARKUS_METRICS_BASE_URL tells the Quarkus MCP server where to
+# scrape live metrics from the workload.  It is set empty in the installer
+# manifest because the workload URL is demo-specific; we derive it here
+# dynamically from the Service that was just created for the quarkus-perf
+# deployment, so the URL stays correct regardless of namespace or service name.
+# ===========================================================================
+log_section "Step 2.5: Setting CAUSA_MCP_QUARKUS_METRICS_BASE_URL on causa-backend"
+
+# Discover the ClusterIP Service for the quarkus-perf workload.
+# We look up the first Service whose selector targets app=quarkus-perf
+# (i.e. the same label used by the Deployment) and read its name + port.
+_QP_SVC_NAME=$(kubectl get svc -n "$NAMESPACE" \
+    -l "app=${WORKLOAD_APP_NAME}" \
+    -o jsonpath='{.items[0].metadata.name}' 2>>"$LOG_FILE" || true)
+_QP_SVC_PORT=$(kubectl get svc -n "$NAMESPACE" \
+    -l "app=${WORKLOAD_APP_NAME}" \
+    -o jsonpath='{.items[0].spec.ports[0].port}' 2>>"$LOG_FILE" || true)
+
+if [[ -n "$_QP_SVC_NAME" && -n "$_QP_SVC_PORT" ]]; then
+    # Build the in-cluster DNS URL: <svc>.<namespace>.svc.cluster.local:<port>
+    _QUARKUS_METRICS_BASE_URL="http://${_QP_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${_QP_SVC_PORT}"
+    write_to_log_file "INFO" "Discovered quarkus-perf service: ${_QP_SVC_NAME}:${_QP_SVC_PORT} → ${_QUARKUS_METRICS_BASE_URL}"
+else
+    log_file_only "Could not discover quarkus-perf Service — skipping CAUSA_MCP_QUARKUS_METRICS_BASE_URL patch"
+    log_validation_success "CAUSA_MCP_QUARKUS_METRICS_BASE_URL patch (skipped — Service not found)"
+    _QUARKUS_METRICS_BASE_URL=""
+fi
+
+if [[ -n "$_QUARKUS_METRICS_BASE_URL" ]]; then
+    start_spinner "Patching causa-backend with metrics base URL (${_QUARKUS_METRICS_BASE_URL})..."
+    _patch_rc=0
+    kubectl set env deployment/causa-backend \
+        -n "$NAMESPACE" \
+        "CAUSA_MCP_QUARKUS_METRICS_BASE_URL=${_QUARKUS_METRICS_BASE_URL}" \
+        >>"$LOG_FILE" 2>&1 || _patch_rc=$?
+    stop_spinner
+
+    if [[ $_patch_rc -eq 0 ]]; then
+        log_install_success "CAUSA_MCP_QUARKUS_METRICS_BASE_URL set to ${_QUARKUS_METRICS_BASE_URL}"
+        write_to_log_file "INFO" "Patched causa-backend: CAUSA_MCP_QUARKUS_METRICS_BASE_URL=${_QUARKUS_METRICS_BASE_URL}"
+    else
+        log_file_only "Failed to patch causa-backend (exit code: $_patch_rc) — set it manually:"
+        log_file_only "  kubectl set env deployment/causa-backend -n $NAMESPACE CAUSA_MCP_QUARKUS_METRICS_BASE_URL=${_QUARKUS_METRICS_BASE_URL}"
+        log_validation_success "CAUSA_MCP_QUARKUS_METRICS_BASE_URL patch (failed — set manually)"
+    fi
+fi
+
+# ===========================================================================
 # Step 3: Configure Causa Backend (LLM) — Phase 2
 # ===========================================================================
 # Phase 1 (create_llm_secrets) already ran before the installer.
@@ -648,7 +712,13 @@ fi
 
 log_section "Step 4: Writing project-level MCP config"
 
-if [[ "$_IS_BOB_SKILL_PATH" == "true" ]]; then
+if [[ "$TARGET" == "openshift" ]]; then
+    # OpenShift: Causa MCP is cluster-hosted — the URL is not reachable from
+    # the local filesystem, so writing .mcp.json / .bob/mcp.json here would
+    # embed an inaccessible address.  Skip the write and print instructions.
+    log_install_success "MCP config write skipped (target=openshift — see manual instructions printed at end)"
+    write_to_log_file "INFO" "target=openshift: .mcp.json / .bob/mcp.json not written — manual MCP registration required"
+elif [[ "$_IS_BOB_SKILL_PATH" == "true" ]]; then
     # Bob IDE: write .bob/mcp.json; remove stale entry from .mcp.json if present
     start_spinner "Writing .bob/mcp.json for Bob IDE..."
     _bob_mcp_json_rc=1
@@ -875,7 +945,7 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
     echo -e "  Check for memory issues, use existing diagnostics if present, otherwise run a fresh RCA, and show the fix.${COLOR_RESET}"
     echo ""
     echo -e "${COLOR_CYAN}Your AI assistant will:${COLOR_RESET}"
-    echo -e "  1. Use the Causa MCP tools registered via .mcp.json"
+    echo -e "  1. Use the Causa MCP tools registered in your IDE"
     echo -e "  2. Check existing diagnostics before starting a duplicate RCA"
     echo -e "  3. Initiate RCA for ${WORKLOAD_APP_NAME} in namespace ${NAMESPACE} when needed"
     echo -e "  4. Poll until COMPLETED, then present root cause + fix"
@@ -883,21 +953,65 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
     echo -e "${COLOR_CYAN}Note:${COLOR_RESET} You can prompt immediately — no need to wait for an OOMKill."
     echo -e "  Watch pod restarts: ${COLOR_BOLD}kubectl get pods -n ${NAMESPACE} -w${COLOR_RESET}"
     echo ""
-    echo -e "${COLOR_CYAN}Causa Backend:${COLOR_RESET} ${CAUSA_BACKEND_URL}/api/v1/diagnostics"
-    echo -e "${COLOR_CYAN}Causa MCP:${COLOR_RESET}     ${CAUSA_MCP_URL}/mcp"
-    if [[ "$_IS_BOB_SKILL_PATH" == "true" ]]; then
-        echo -e "${COLOR_CYAN}Bob MCP config:${COLOR_RESET}     ${SCRIPT_DIR}/../.bob/mcp.json"
-    else
-        echo -e "${COLOR_CYAN}Project MCP config:${COLOR_RESET} ${SCRIPT_DIR}/../.mcp.json"
-        if [[ -z "$SKILL_PATH" ]]; then
+    if [[ "$TARGET" != "openshift" ]]; then
+        echo -e "${COLOR_CYAN}Causa Backend:${COLOR_RESET} ${CAUSA_BACKEND_URL}/api/v1/diagnostics"
+        echo -e "${COLOR_CYAN}Causa MCP:${COLOR_RESET}     ${CAUSA_MCP_URL}/mcp"
+        if [[ "$_IS_BOB_SKILL_PATH" == "true" ]]; then
             echo -e "${COLOR_CYAN}Bob MCP config:${COLOR_RESET}     ${SCRIPT_DIR}/../.bob/mcp.json"
+        else
+            echo -e "${COLOR_CYAN}Project MCP config:${COLOR_RESET} ${SCRIPT_DIR}/../.mcp.json"
+            if [[ -z "$SKILL_PATH" ]]; then
+                echo -e "${COLOR_CYAN}Bob MCP config:${COLOR_RESET}     ${SCRIPT_DIR}/../.bob/mcp.json"
+            fi
         fi
+        echo ""
     fi
-    echo ""
+
+    # ── OpenShift: MCP registration + skill instructions ─────────────────────
+    if [[ "$TARGET" == "openshift" ]]; then
+        echo -e "${COLOR_CYAN}${COLOR_BOLD}----------------------------------------${COLOR_RESET}"
+        echo -e "${COLOR_BOLD_YELLOW}OpenShift target — MCP registration required:${COLOR_RESET}"
+        echo ""
+        echo -e "  The Causa MCP server is running inside the OpenShift cluster."
+        echo -e "  .mcp.json was NOT written automatically because the cluster URL"
+        echo -e "  is not a fixed localhost address."
+        echo ""
+        echo -e "  ${COLOR_BOLD}Step 1 — Find the Causa MCP route/service URL:${COLOR_RESET}"
+        echo -e "    oc get route causa-mcp -n ${NAMESPACE} -o jsonpath='{.spec.host}'"
+        echo -e "    # or, if no Route is exposed, port-forward:"
+        echo -e "    kubectl port-forward svc/causa-mcp-svc ${COLOR_BOLD}30005${COLOR_RESET}:8080 -n ${NAMESPACE} &"
+        echo -e "    # then use: http://localhost:30005"
+        echo ""
+        echo -e "  ${COLOR_BOLD}Step 2 — Register the MCP server in your IDE:${COLOR_RESET}"
+        echo ""
+        echo -e "  ${COLOR_BOLD}Bob IDE${COLOR_RESET} — add to .bob/mcp.json (or Bob Settings → MCP → Edit Project MCP):"
+        echo -e '    {'
+        echo -e '      "mcpServers": {'
+        echo -e '        "causa-rca": {'
+        echo -e '          "type": "http",'
+        echo -e '          "url": "http://<causa-mcp-route-or-forwarded-url>/mcp"'
+        echo -e '        }'
+        echo -e '      }'
+        echo -e '    }'
+        echo ""
+        echo -e "  ${COLOR_BOLD}Claude Code / Cursor / Windsurf / VS Code Copilot / Gemini CLI${COLOR_RESET}"
+        echo -e "  — add to .mcp.json at the repo root:"
+        echo -e '    {'
+        echo -e '      "mcpServers": {'
+        echo -e '        "causa-rca": {'
+        echo -e '          "type": "http",'
+        echo -e '          "url": "http://<causa-mcp-route-or-forwarded-url>/mcp"'
+        echo -e '        }'
+        echo -e '      }'
+        echo -e '    }'
+        echo ""
+        echo -e "${COLOR_CYAN}${COLOR_BOLD}----------------------------------------${COLOR_RESET}"
+        echo ""
+    fi
 
     # ── Skill setup summary ─────────────────────────────────────────────────
     echo -e "${COLOR_CYAN}${COLOR_BOLD}----------------------------------------${COLOR_RESET}"
-    echo -e "${COLOR_BOLD_YELLOW}Skill setup:${COLOR_RESET}"
+    echo -e "${COLOR_BOLD_YELLOW}Skill setup${COLOR_RESET}${COLOR_BOLD_YELLOW}$([[ "$TARGET" == "openshift" ]] && echo " (OpenShift target)"):${COLOR_RESET}"
     if [[ "$_SKILL_INSTALLED" == "true" ]]; then
         echo -e "  ${COLOR_BOLD_GREEN}✓ Installed to: ${_SKILL_INSTALL_PATH}${COLOR_RESET}"
         echo -e "  Your AI assistant will load it automatically from that location."

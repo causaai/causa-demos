@@ -54,6 +54,7 @@ terminate_demo() {
     local demo_dir="$2"
     local skip_installer="${3:-false}"
     local delete_cluster="${4:-false}"
+    local target="${5:-kind}"
 
     if [[ -z "$namespace" || -z "$demo_dir" ]]; then
         log_error "terminate_demo requires namespace and demo_dir"
@@ -114,7 +115,7 @@ terminate_demo() {
             local _installer_log
             _installer_log="$(dirname "$installer_script")/install.log"
 
-            local _terminate_args=(--terminate -n "$namespace")
+            local _terminate_args=(--terminate -n "$namespace" --target "$target")
             [[ "$delete_cluster" == "true" ]] && _terminate_args+=(--delete-cluster)
 
             log_file_only "Running: /usr/bin/env bash $installer_script ${_terminate_args[*]}"
@@ -158,12 +159,6 @@ terminate_demo() {
         log_file_only "Installer cleanup skipped (--skip-installer)"
         log_validation_success "Installer cleanup (skipped — --skip-installer)"
     fi
-
-    # ── Step 3: Remove cloned repos / artifacts ───────────────────────────────
-    log_section "Removing cloned repositories"
-    start_spinner "Removing artifacts..."
-    cleanup_directory "$demo_dir"
-    stop_spinner
 
     log_install_success "Cleanup completed"
     return 0
