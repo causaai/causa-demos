@@ -677,11 +677,10 @@ fi
 # ===========================================================================
 # Step 3: Configure Causa Backend (LLM) — Phase 2
 # ===========================================================================
-# Phase 1 (create_llm_secrets) already ran before the installer.
-# Phase 2 posts the non-sensitive config keys to the now-running backend.
-# The GCP credential is NOT posted here — it is already available to the
-# backend via the K8s Secret created in Phase 1 and the
-# GOOGLE_APPLICATION_CREDENTIALS env var set in the deployment manifest.
+# Phase 1 (create_llm_secrets) already ran after the installer (line ~522).
+# Phase 2 posts all config keys to the now-running backend, including
+# GOOGLE_APPLICATION_CREDENTIALS (base64-encoded, via stdin) for
+# vertex-ai-anthropic — this is the sole credential delivery path.
 # ===========================================================================
 log_section "Step 3: Configuring Causa Backend (LLM)"
 configure_llm_runtime "$LLM_ENV_FILE" "$NAMESPACE"
