@@ -18,7 +18,7 @@ An end-to-end demo that deploys a **quarkus-perf** workload engineered for chaos
 ## Prerequisites
 
 ```text
-kind      kubectl      docker (or podman)      git      python3
+kind      kubectl      docker (or podman)      git      python3     helm
 ```
 
 - LLM credentials in `llm.env` (copy `llm.env.example` and fill in values)
