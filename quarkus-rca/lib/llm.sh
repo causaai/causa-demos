@@ -15,7 +15,9 @@
 #
 #   configure_llm_runtime  LLM_ENV_FILE  NAMESPACE
 #     Phase 2 — called AFTER the installer.
-#     POSTs config keys to /api/v1/configs. GCP credentials are never POSTed.
+#     POSTs config keys to /api/v1/configs, including
+#     GOOGLE_APPLICATION_CREDENTIALS as base64-encoded file contents for
+#     vertex-ai-anthropic (dual delivery: K8s Secret volume mount + config API).
 ################################################################################
 
 # Source guard
@@ -120,10 +122,12 @@ validate_llm_config() {
 # Phase 1 — create K8s secrets BEFORE the installer runs.
 #
 #   vertex-ai-anthropic:
-#     causa-gcp-credentials — the raw credentials file stored as key.json,
-#     mounted by the causa-backend deployment at
-#     /var/secrets/google/key.json via the GOOGLE_APPLICATION_CREDENTIALS
-#     env var (set in the deployment manifest).
+#     causa-gcp-credentials — the raw credentials file stored as key.json.
+#     Used by _patch_vertex_ai_credential_mount (called after the installer)
+#     to mount the secret at /var/secrets/google/key.json inside the pod.
+#     Additionally, configure_llm_runtime POSTs the credentials as a
+#     base64-encoded value via the config API so the backend can resolve ADC
+#     even when the volume mount is not yet present or is skipped.
 #
 #   anthropic | bob:
 #     causa-llm-secrets — LLM_API_KEY stored as a K8s secret.
@@ -148,10 +152,15 @@ create_llm_secrets() {
 
     local creds_file
     creds_file=$(eval echo "${GOOGLE_APPLICATION_CREDENTIALS:-}")
-    # Also accept a local causa-gcp-key.json next to the script as a fallback
+    # Resolve relative paths against llm.env's directory, not the CWD.
+    # (CWD may have changed to $DEMO_DIR by the time this function runs.)
+    if [[ -n "$creds_file" && "$creds_file" != /* ]]; then
+        creds_file="$(dirname "$llm_env_file")/$creds_file"
+    fi
+    # Also accept a local causa-gcp-key.json next to llm.env as a fallback.
     if [[ -z "$creds_file" || ! -f "$creds_file" ]]; then
-        if [[ -f "$SCRIPT_DIR/causa-gcp-key.json" ]]; then
-            creds_file="$SCRIPT_DIR/causa-gcp-key.json"
+        if [[ -f "$(dirname "$llm_env_file")/causa-gcp-key.json" ]]; then
+            creds_file="$(dirname "$llm_env_file")/causa-gcp-key.json"
         fi
     fi
 
@@ -229,16 +238,21 @@ create_llm_secrets() {
 # Phase 2 — POST config keys to the running causa-backend after the
 # installer has deployed it.
 #
-# Keys posted here are non-sensitive (LLM_PROVIDER, LLM_MODEL_NAME,
-# VERTEX_PROJECT_ID, VERTEX_LOCATION).  Exceptions:
-#   anthropic — LLM_API_KEY is included (no volume-mount path available).
-#   bob       — LLM_API_KEY (when set) and BOB_SHELL_PATH (when set) are
-#               included so the backend knows how to invoke Bob.
+# Keys posted for each provider:
 #
-# vertex-ai-anthropic — GOOGLE_APPLICATION_CREDENTIALS is NOT posted here.
-#   The credential reaches the backend exclusively via the K8s Secret
-#   (created by create_llm_secrets) and the volume mount applied by
-#   _patch_vertex_ai_credential_mount.
+#   vertex-ai-anthropic:
+#     LLM_PROVIDER, LLM_MODEL_NAME, VERTEX_PROJECT_ID, VERTEX_LOCATION,
+#     GOOGLE_APPLICATION_CREDENTIALS (base64-encoded contents of the credentials
+#     file, piped through stdin — never passed as a command-line argument).
+#     Dual delivery: the K8s Secret volume mount (_patch_vertex_ai_credential_mount)
+#     and this config-API POST both supply credentials so the backend works
+#     regardless of which path resolves first.
+#
+#   anthropic:
+#     LLM_PROVIDER, LLM_MODEL_NAME, LLM_API_KEY.
+#
+#   bob:
+#     LLM_PROVIDER, LLM_API_KEY (when set), BOB_SHELL_PATH (when set).
 #
 # NOTE: both create_llm_secrets and configure_llm_runtime source llm.env
 # directly into the current shell with `set -a` (required so kubectl/curl
@@ -264,10 +278,23 @@ configure_llm_runtime() {
     source "$llm_env_file"
     set +a
 
-    # Build the payload.
+    # Resolve the credentials file path (expand ~ and relative paths).
+    local creds_file
+    creds_file=$(eval echo "${GOOGLE_APPLICATION_CREDENTIALS:-}")
+    if [[ -n "$creds_file" && "$creds_file" != /* ]]; then
+        creds_file="$(dirname "$llm_env_file")/$creds_file"
+    fi
+    # Also accept causa-gcp-key.json placed next to llm.env as a fallback.
+    if [[ -z "$creds_file" || ! -f "$creds_file" ]]; then
+        local _fallback
+        _fallback="$(dirname "$llm_env_file")/causa-gcp-key.json"
+        [[ -f "$_fallback" ]] && creds_file="$_fallback"
+    fi
+    # Build the payload — read credentials file inside Python so the base64
+    # blob never touches a shell variable or the process environment.
     local payload
-    payload=$(python3 - << 'PYEOF'
-import os, json, base64
+    payload=$(python3 - "$creds_file" << 'PYEOF'
+import os, sys, json, base64
 
 configs = {}
 
@@ -281,11 +308,24 @@ if model:       configs["LLM_MODEL_NAME"]  = model
 if temperature: configs["LLM_TEMPERATURE"] = temperature
 if endpoint:    configs["LLM_ENDPOINT"]    = endpoint
 
-# Vertex AI — project and location are non-sensitive
+# Vertex AI — project and location are non-sensitive; credentials are
+# base64-encoded and posted so the backend can resolve ADC regardless of
+# whether a volume mount is present (supports both ADC JSON and service-
+# account key files).
 vertex_proj = os.getenv("VERTEX_PROJECT_ID", "").strip()
 vertex_loc  = os.getenv("VERTEX_LOCATION",   "").strip()
 if vertex_proj: configs["VERTEX_PROJECT_ID"] = vertex_proj
 if vertex_loc:  configs["VERTEX_LOCATION"]   = vertex_loc
+
+if provider == "vertex-ai-anthropic":
+    # Path is passed as argv[1] — not via the environment — to avoid
+    # exposing the resolved path (or its contents) in the process env.
+    creds_path = sys.argv[1] if len(sys.argv) > 1 else ""
+    if creds_path and os.path.isfile(creds_path):
+        with open(creds_path, "rb") as f:
+            configs["GOOGLE_APPLICATION_CREDENTIALS"] = base64.b64encode(f.read()).decode()
+    else:
+        print(f"WARN: credentials file not found at '{creds_path}' — GOOGLE_APPLICATION_CREDENTIALS will not be posted", file=sys.stderr)
 
 # Anthropic / Bob — API key must go via the API (no volume mount for these providers)
 if provider in ("anthropic", "bob"):
@@ -342,11 +382,15 @@ print(', '.join(keys))
     local cfg_rc=1 attempt
     for attempt in 1 2 3 4 5; do
         cfg_rc=0
-        kubectl exec -n "$namespace" "$causa_pod" -- \
+        # Feed payload through stdin (-i/--stdin) so the credential-bearing JSON
+        # never appears in the kubectl exec or curl argument list, and therefore
+        # cannot be observed via ps, /proc, audit logs, or command tracing.
+        printf '%s' "$payload" | \
+        kubectl exec -i -n "$namespace" "$causa_pod" -- \
             curl -sf --max-time 10 \
             -X POST "http://localhost:8080/api/v1/configs" \
             -H "Content-Type: application/json" \
-            -d "$payload" \
+            -d @- \
             >>"${LOG_FILE}" 2>&1 || cfg_rc=$?
         [[ $cfg_rc -eq 0 ]] && break
         write_to_log_file "INFO" "Config push attempt ${attempt}/5 failed (rc=${cfg_rc}) — retrying in 10s..."
@@ -361,17 +405,6 @@ print(', '.join(keys))
         log_validation_success "Causa config push (failed — check ${LOG_FILE})"
     fi
 
-    # For vertex-ai-anthropic the Google ADC library resolves credentials via
-    # the GOOGLE_APPLICATION_CREDENTIALS *environment variable* at runtime —
-    # it does not read the value from the /api/v1/configs store.  The secret
-    # was already created by create_llm_secrets, so we just need to:
-    #   1. Mount it into the causa-backend pod at /var/secrets/google/key.json
-    #   2. Set GOOGLE_APPLICATION_CREDENTIALS to that path in the container env
-    # We patch the live Deployment here so this is always applied, even on
-    # --skip-installer runs or when the installer did not include the mount.
-    if [[ "${LLM_PROVIDER:-}" == "vertex-ai-anthropic" ]]; then
-        _patch_vertex_ai_credential_mount "$namespace"
-    fi
 }
 
 # ---------------------------------------------------------------------------
