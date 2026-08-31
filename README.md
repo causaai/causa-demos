@@ -25,7 +25,7 @@ Provisions a local Kubernetes cluster using Kind and installs all required compo
 **Prerequisites:**
 
 ```text
-kind      docker      kubectl      git      jq      python3
+kind      docker      kubectl      git      jq      python3     helm
 ```
 
 > Ollama requires CPU-only execution with a minimum of 4 vCPUs (6+ recommended), at least 8 GB RAM (16 GB recommended), and approximately 2.5–3 GB free disk space for the phi3:mini model weights.
