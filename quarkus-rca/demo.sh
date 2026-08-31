@@ -5,22 +5,26 @@
 # End-to-end demo that:
 #
 #   Step 1 — Runs install.sh from the quarkus-rca installer branch
-#             Provisions: Kind cluster, Prometheus, k8s-mcp-server, Causa Backend,
-#             Causa MCP, PostgreSQL (async-profiler & quarkus-mcp skipped — images TBD)
+#             Provisions: Kind cluster (or OpenShift), Prometheus, k8s-mcp-server,
+#             Causa Backend, Causa MCP, PostgreSQL.
+#             Pass --target openshift to deploy onto an existing OpenShift cluster.
 #
 #   Step 2 — Deploys the quarkus-perf workload + load-gen job
-#             into the causa-rca namespace on the kind cluster
+#             into the causa-rca namespace on the target cluster.
+#             Uses deploy-openshift.yaml when --target openshift is set.
 #
 #   Step 3 — Sources llm.env, creates credentials Secret, and pushes
 #             LLM config to Causa via POST /api/v1/configs
 #
-#   Step 4 — Writes .mcp.json to the repo root (cross-IDE MCP standard;
-#             auto-loaded by Claude shell, Cursor, Windsurf, VS Code Copilot,
-#             Gemini CLI and others — no per-user setup required).
+#   Step 4 — Writes .mcp.json / .bob/mcp.json to the repo root when
+#             target=kind (cross-IDE MCP standard).
+#             When target=openshift the Causa MCP URL is cluster-hosted;
+#             .mcp.json writing is skipped and manual instructions are printed.
 #             Optionally installs the causa-rca SKILL.md to a user-supplied
 #             path via --skill-path <dir>.
 #
-#   Step 5 — Prints ready prompts and skill setup instructions
+#   Step 5 — Prints ready prompts, MCP registration instructions, and
+#             skill setup instructions
 #
 # Usage:  ./demo.sh [OPTIONS]
 # Run with -h for full option list.
@@ -42,6 +46,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOGGING_FILE="$SCRIPT_DIR/lib/logging.sh"
 UTILS_FILE="$SCRIPT_DIR/lib/utils.sh"
 UNINSTALL_FILE="$SCRIPT_DIR/lib/uninstall.sh"
+LLM_FILE="$SCRIPT_DIR/lib/llm.sh"
 
 IMAGES_ENV_FILE="$SCRIPT_DIR/images.env"
 if [[ -f "$IMAGES_ENV_FILE" ]]; then
@@ -52,7 +57,7 @@ if [[ -f "$IMAGES_ENV_FILE" ]]; then
     echo -e "\033[0;36m[images.env]\033[0m Image overrides loaded from: $IMAGES_ENV_FILE"
 fi
 
-for _f in "$LOGGING_FILE" "$UTILS_FILE" "$UNINSTALL_FILE"; do
+for _f in "$LOGGING_FILE" "$UTILS_FILE" "$UNINSTALL_FILE" "$LLM_FILE"; do
     if [[ ! -f "$_f" ]]; then
         echo "ERROR: $(basename "$_f") not found at $_f"
         exit 1
@@ -62,6 +67,7 @@ done
 source "$LOGGING_FILE"
 source "$UTILS_FILE"
 source "$UNINSTALL_FILE"
+source "$LLM_FILE"
 
 _demo_exit_trap() { trap '' INT TERM; stop_spinner; exit 130; }
 trap '_demo_exit_trap' INT TERM
@@ -73,6 +79,7 @@ NAMESPACE="causa-rca"
 TARGET="${TARGET:-kind}"
 SKILL_PATH=""
 TERMINATE=false
+DELETE_CLUSTER=false
 SKIP_INSTALLER=false
 DEMO_DIR="$SCRIPT_DIR/artifacts"
 
@@ -109,7 +116,7 @@ CAUSA_BACKEND_URL="http://localhost:30001"
 show_help() {
     echo "Quarkus RCA Demo Script"
     echo ""
-    echo "Usage: $0 [--target TARGET] [-n namespace] [--skill-path DIR] [-t] [--skip-installer] [--installer-url URL] [--installer-branch BRANCH] [--chaos-lab-url URL] [--chaos-lab-branch BRANCH] [-h]"
+    echo "Usage: $0 [--target TARGET] [-n namespace] [--skill-path DIR] [-t] [--delete-cluster] [--skip-installer] [--installer-url URL] [--installer-branch BRANCH] [--chaos-lab-url URL] [--chaos-lab-branch BRANCH] [-h]"
     echo ""
     echo "Options:"
     echo "    --target TARGET          Target platform: kind, openshift, vm, etc. (default: kind)"
@@ -123,6 +130,8 @@ show_help() {
     echo "                               --skill-path ~/.bob/skills        (Bob)"
     echo "                               --skill-path ~/.claude/skills     (Claude Code)"
     echo "    -t                       Terminate mode: clean up all resources"
+    echo "    --delete-cluster         Also delete the Kind cluster when terminating (kind target only)."
+    echo "                             Must be used together with -t."
     echo "    --skip-installer         Skip running install.sh (use when stack is already deployed)"
     echo "    --installer-url URL      Git URL of the installer repo"
     echo "                             Default: https://github.com/causaai/installer"
@@ -135,9 +144,15 @@ show_help() {
     echo "    -h                       Show this help message"
     echo ""
     echo "MCP server registration:"
-    echo "    .mcp.json is always written to the repo root. Any IDE that supports the"
-    echo "    cross-IDE MCP standard (Claude shell, Cursor, Windsurf, VS Code Copilot,"
-    echo "    Gemini CLI) auto-loads it — no per-user or per-IDE setup required."
+    echo "    The script writes MCP config based on --skill-path:"
+    echo "      --skill-path ~/.bob/skills   → writes .bob/mcp.json only (Bob IDE)"
+    echo "                                     removes stale causa-rca from .mcp.json"
+    echo "      --skill-path <other>         → writes .mcp.json only (cross-IDE root)"
+    echo "                                     removes stale causa-rca from .bob/mcp.json"
+    echo "      (no --skill-path)            → writes both .mcp.json and .bob/mcp.json"
+    echo "    Any IDE that supports the cross-IDE MCP standard (Claude Code CLI, Cursor,"
+    echo "    Windsurf, VS Code Copilot, Gemini CLI) auto-loads .mcp.json from the repo"
+    echo "    root. Bob reads .bob/mcp.json."
     echo ""
     echo "Skill installation:"
     echo "    Pass --skill-path <dir> to have the script copy SKILL.md to that location."
@@ -177,8 +192,11 @@ show_help() {
     echo "    # Skip installer (stack already running)"
     echo "    $0 --skip-installer"
     echo ""
-    echo "    # Tear down everything"
+    echo "    # Tear down everything (keep cluster)"
     echo "    $0 -t"
+    echo ""
+    echo "    # Tear down everything including the Kind cluster"
+    echo "    $0 -t --delete-cluster"
     echo ""
     echo "Prerequisites:  kind (if target=kind)  kubectl  docker or podman  git  python3"
     echo ""
@@ -199,6 +217,7 @@ while [[ $# -gt 0 ]]; do
             [[ -z "${2:-}" ]] && { echo "ERROR: value required for --skill-path" >&2; exit 1; }
             SKILL_PATH="$2"; shift 2 ;;
         -t)               TERMINATE=true; shift ;;
+        --delete-cluster) [[ "$TERMINATE" == "true" ]] || { echo "ERROR: --delete-cluster requires -t" >&2; exit 1; }; DELETE_CLUSTER=true; shift ;;
         --skip-installer) SKIP_INSTALLER=true; shift ;;
         --installer-url)
             [[ -z "${2:-}" ]] && { echo "ERROR: value required for --installer-url" >&2; exit 1; }
@@ -218,15 +237,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---------------------------------------------------------------------------
-# Load llm.env early
+# LLM env path — used by validate_llm_config / create_llm_secrets / configure_llm_runtime
 # ---------------------------------------------------------------------------
-_LLM_ENV_FILE="$SCRIPT_DIR/llm.env"
-if [[ -f "$_LLM_ENV_FILE" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$_LLM_ENV_FILE"
-    set +a
-fi
+LLM_ENV_FILE="$SCRIPT_DIR/llm.env"
 
 # ---------------------------------------------------------------------------
 # Initialise logging
@@ -260,18 +273,16 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Terminate mode
+# MCP JSON helpers — defined early so both the terminate path and the install
+# path can call them without a forward-reference problem.
 # ---------------------------------------------------------------------------
-if [[ "$TERMINATE" == "true" ]]; then
-    terminate_demo "$NAMESPACE" "$DEMO_DIR" "$SKIP_INSTALLER"
 
-    # Remove causa-rca from project-level .mcp.json
-    _MCP_JSON_PATH="${SCRIPT_DIR}/../.mcp.json"
-    if [[ -f "$_MCP_JSON_PATH" ]]; then
-        start_spinner "Removing Causa MCP from project .mcp.json..."
-        _remove_mcp_json_rc=1
-        if command_exists python3; then
-            python3 - "$_MCP_JSON_PATH" << 'PYEOF'
+# Helper: remove the causa-rca entry from an existing JSON file.
+# Returns 0 on success, 1 on any error (including python3 failure).
+# No-op (exit 0) if the file does not exist or has no causa-rca key.
+_remove_mcp_entry() {
+    local _target_path="$1"
+    python3 - "$_target_path" << 'PYEOF'
 import json, sys
 path = sys.argv[1]
 try:
@@ -286,11 +297,73 @@ except Exception as e:
     print(f"warn: {e}", file=sys.stderr)
     sys.exit(1)
 PYEOF
+}
+
+# Helper: merge causa-rca entry into an existing or new JSON file.
+# Creates the target directory if it does not exist; returns 1 if mkdir fails.
+_write_mcp_entry() {
+    local _target_path="$1"
+    local _target_dir
+    _target_dir="$(dirname "$_target_path")"
+    mkdir -p "$_target_dir" || return 1
+    python3 - "$_target_path" "$CAUSA_MCP_URL" << 'PYEOF'
+import json, sys, os
+path, url = sys.argv[1], sys.argv[2]
+cfg = {}
+if os.path.isfile(path):
+    try:
+        with open(path) as f:
+            cfg = json.load(f)
+    except json.JSONDecodeError:
+        cfg = {}
+cfg.setdefault("mcpServers", {})["causa-rca"] = {
+    "type": "http",
+    "url": url + "/mcp"
+}
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+print("ok")
+PYEOF
+}
+
+# ---------------------------------------------------------------------------
+# Terminate mode
+# ---------------------------------------------------------------------------
+if [[ "$TERMINATE" == "true" ]]; then
+    terminate_demo "$NAMESPACE" "$DEMO_DIR" "$SKIP_INSTALLER" "$DELETE_CLUSTER" "$TARGET"
+
+    # Remove causa-rca from project-level .mcp.json (cross-IDE root)
+    _MCP_JSON_PATH="${SCRIPT_DIR}/../.mcp.json"
+    if [[ -f "$_MCP_JSON_PATH" ]]; then
+        start_spinner "Removing Causa MCP from project .mcp.json..."
+        _remove_mcp_json_rc=1
+        if command_exists python3; then
+            _remove_mcp_entry "$_MCP_JSON_PATH"
             _remove_mcp_json_rc=$?
         fi
         stop_spinner
         if [[ $_remove_mcp_json_rc -eq 0 ]]; then
             log_install_success "Causa MCP removed from project .mcp.json"
+        fi
+    fi
+
+    # Remove causa-rca from Bob project-level .bob/mcp.json (if it exists)
+    _BOB_MCP_JSON_PATH="${SCRIPT_DIR}/../.bob/mcp.json"
+    if [[ -f "$_BOB_MCP_JSON_PATH" ]]; then
+        start_spinner "Removing Causa MCP from .bob/mcp.json..."
+        _remove_bob_mcp_rc=1
+        if command_exists python3; then
+            _remove_mcp_entry "$_BOB_MCP_JSON_PATH"
+            _remove_bob_mcp_rc=$?
+        else
+            write_to_log_file "WARN" "python3 not available — could not remove causa-rca from .bob/mcp.json; remove it manually"
+        fi
+        stop_spinner
+        if [[ $_remove_bob_mcp_rc -eq 0 ]]; then
+            log_install_success "Causa MCP removed from .bob/mcp.json"
+        else
+            log_file_only "Failed to remove causa-rca from .bob/mcp.json — remove it manually (python3 required)"
         fi
     fi
 
@@ -315,7 +388,7 @@ fi
 #   - --skip-installer is set (stack already deployed, cluster must be up)
 #   - target is not kind (openshift etc. require a pre-existing cluster)
 if [[ "$SKIP_INSTALLER" == "true" || "$TARGET" != "kind" ]]; then
-    if ! check_cluster_reachability; then
+    if ! check_cluster_reachability "$TARGET"; then
         exit 1
     fi
 fi
@@ -334,10 +407,29 @@ fi
 export CONTAINER_RUNTIME
 write_to_log_file "INFO" "Container runtime: $CONTAINER_RUNTIME"
 
+# llm.env is required — it tells Causa Backend which LLM to use for RCA.
+# Fail here, inside the prerequisites block, so the user gets a single clear
+# error before any infrastructure work starts.
+if [[ ! -f "$LLM_ENV_FILE" ]]; then
+    log_error "llm.env not found: $LLM_ENV_FILE"
+    log_error "  Copy the example and fill in your credentials:"
+    log_error "    cp $SCRIPT_DIR/llm.env.example $SCRIPT_DIR/llm.env"
+    log_error "  Then edit llm.env and set LLM_PROVIDER plus the required fields"
+    log_error "  for your provider (vertex-ai-anthropic, anthropic, or bob)."
+    exit 1
+fi
+
 log_validation_success "Validating Prerequisites"
 
+# Phase 1: validate LLM config and create K8s secrets BEFORE the installer
+# runs, so causa-backend has its credentials secret available on first startup.
+if ! validate_llm_config "$LLM_ENV_FILE"; then
+    exit 1
+fi
+log_validation_success "LLM Configuration"
+
 ensure_directory "$DEMO_DIR"
-cd "$DEMO_DIR"
+cd "$DEMO_DIR" || { log_error "Failed to change directory to $DEMO_DIR"; exit 1; }
 
 # ===========================================================================
 # Step 1: Run install.sh (Causa RCA stack on kind)
@@ -372,19 +464,19 @@ if [[ "$SKIP_INSTALLER" == "false" ]]; then
     fi
 
     # ---------------------------------------------------------------------------
-    # 1b: Run install.sh with --target kind and image overrides
+    # 1b: Run install.sh with --target $TARGET and image overrides
     # ---------------------------------------------------------------------------
     # Images are loaded from images.env at script startup (set -a) and passed
     # as explicit flags to install.sh. To change any image, edit images.env.
     # ---------------------------------------------------------------------------
     {
         echo ""
-        echo -e "${COLOR_CYAN}Running install.sh --target kind ...${COLOR_RESET}"
+        echo -e "${COLOR_CYAN}Running install.sh --target ${TARGET} ...${COLOR_RESET}"
         echo ""
     } >/dev/tty 2>/dev/null || true
 
     _INSTALL_ARGS=(
-        --target kind
+        --target "${TARGET}"
         -n "${NAMESPACE}"
     )
 
@@ -423,6 +515,12 @@ else
     INSTALLER_DIR="${INSTALLER_DIR:-}"
 fi
 
+# Phase 1 (cont): create the GCP/LLM K8s secret now that the cluster and
+# the Causa namespace exist. Moved here (after install.sh) so kubectl has a
+# live API server to talk to — running it before the Kind cluster is
+# provisioned caused connection-timeout errors.
+create_llm_secrets "$LLM_ENV_FILE" "$NAMESPACE"
+
 # ===========================================================================
 # Step 1.5: Clone chaos-lab and locate quarkus-perf manifests
 # ===========================================================================
@@ -443,14 +541,24 @@ log_install_success "chaos-lab cloned (branch: $CHAOS_LAB_BRANCH)"
 # ===========================================================================
 log_section "Step 2: Deploying quarkus-perf workload"
 
-WORKLOAD_MANIFEST="$CHAOS_LAB_DIR/$QUARKUS_PERF_SUBDIR/manifests/deploy-kind.yaml"
+# Select the correct manifest for the target platform.
+# Preference order for openshift: deploy-openshift.yaml → deploy.yaml
+# Preference order for kind/other: deploy-kind.yaml → deploy.yaml
+if [[ "$TARGET" == "openshift" ]]; then
+    WORKLOAD_MANIFEST="$CHAOS_LAB_DIR/$QUARKUS_PERF_SUBDIR/manifests/deploy-openshift.yaml"
+    if [[ ! -f "$WORKLOAD_MANIFEST" ]]; then
+        WORKLOAD_MANIFEST="$CHAOS_LAB_DIR/$QUARKUS_PERF_SUBDIR/manifests/deploy.yaml"
+    fi
+else
+    WORKLOAD_MANIFEST="$CHAOS_LAB_DIR/$QUARKUS_PERF_SUBDIR/manifests/deploy-kind.yaml"
+    if [[ ! -f "$WORKLOAD_MANIFEST" ]]; then
+        WORKLOAD_MANIFEST="$CHAOS_LAB_DIR/$QUARKUS_PERF_SUBDIR/manifests/deploy.yaml"
+    fi
+fi
+
 LOAD_GEN_MANIFEST="$CHAOS_LAB_DIR/$QUARKUS_PERF_SUBDIR/manifests/load-gen-job.yaml"
 WORKLOAD_RENDERED_MANIFEST="$DEMO_DIR/quarkus-perf-deploy.rendered.yaml"
 LOAD_GEN_RENDERED_MANIFEST="$DEMO_DIR/quarkus-perf-load-gen.rendered.yaml"
-
-if [[ ! -f "$WORKLOAD_MANIFEST" ]]; then
-    WORKLOAD_MANIFEST="$CHAOS_LAB_DIR/$QUARKUS_PERF_SUBDIR/manifests/deploy.yaml"
-fi
 
 if [[ ! -f "$WORKLOAD_MANIFEST" ]]; then
     log_error "Workload manifest not found in chaos-lab under $CHAOS_LAB_DIR/$QUARKUS_PERF_SUBDIR/manifests"
@@ -468,7 +576,11 @@ if [[ -f "$LOAD_GEN_MANIFEST" ]]; then
 fi
 
 start_spinner "Creating namespace $NAMESPACE..."
-ensure_namespace "$NAMESPACE" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' >>"$LOG_FILE"
+if ! ensure_namespace "$NAMESPACE"; then
+    stop_spinner
+    log_error "Failed to ensure namespace $NAMESPACE — cannot deploy workload"
+    exit 1
+fi
 stop_spinner
 
 # ── Deploy quarkus-perf ──────────────────────────────────────────────────
@@ -513,198 +625,166 @@ fi
 
 
 # ===========================================================================
-# Step 3: Configure Causa Backend — LLM credentials
+# Step 2.5: Patch causa-backend with the quarkus-perf metrics base URL
 # ===========================================================================
-# Sources llm.env, creates the causa-gcp-credentials K8s Secret from
-# causa-gcp-key.json, and pushes LLM config to Causa via
-# POST /api/v1/configs (default Causa cooldown is preserved).
-#
-# Non-fatal: if no LLM provider is configured, Causa performs RCA using
-# heuristics without LLM config.
+# CAUSA_MCP_QUARKUS_METRICS_BASE_URL tells the Quarkus MCP server where to
+# scrape live metrics from the workload.  It is set empty in the installer
+# manifest because the workload URL is demo-specific; we derive it here
+# dynamically from the Service that was just created for the quarkus-perf
+# deployment, so the URL stays correct regardless of namespace or service name.
+# ===========================================================================
+log_section "Step 2.5: Setting CAUSA_MCP_QUARKUS_METRICS_BASE_URL on causa-backend"
+
+# Discover the ClusterIP Service for the quarkus-perf workload.
+# We look up the first Service whose selector targets app=quarkus-perf
+# (i.e. the same label used by the Deployment) and read its name + port.
+_QP_SVC_NAME=$(kubectl get svc -n "$NAMESPACE" \
+    -l "app=${WORKLOAD_APP_NAME}" \
+    -o jsonpath='{.items[0].metadata.name}' 2>>"$LOG_FILE" || true)
+_QP_SVC_PORT=$(kubectl get svc -n "$NAMESPACE" \
+    -l "app=${WORKLOAD_APP_NAME}" \
+    -o jsonpath='{.items[0].spec.ports[0].port}' 2>>"$LOG_FILE" || true)
+
+if [[ -n "$_QP_SVC_NAME" && -n "$_QP_SVC_PORT" ]]; then
+    # Build the in-cluster DNS URL: <svc>.<namespace>.svc.cluster.local:<port>
+    _QUARKUS_METRICS_BASE_URL="http://${_QP_SVC_NAME}.${NAMESPACE}.svc.cluster.local:${_QP_SVC_PORT}"
+    write_to_log_file "INFO" "Discovered quarkus-perf service: ${_QP_SVC_NAME}:${_QP_SVC_PORT} → ${_QUARKUS_METRICS_BASE_URL}"
+else
+    log_file_only "Could not discover quarkus-perf Service — skipping CAUSA_MCP_QUARKUS_METRICS_BASE_URL patch"
+    log_validation_success "CAUSA_MCP_QUARKUS_METRICS_BASE_URL patch (skipped — Service not found)"
+    _QUARKUS_METRICS_BASE_URL=""
+fi
+
+if [[ -n "$_QUARKUS_METRICS_BASE_URL" ]]; then
+    start_spinner "Patching causa-backend with metrics base URL (${_QUARKUS_METRICS_BASE_URL})..."
+    _patch_rc=0
+    kubectl set env deployment/causa-backend \
+        -n "$NAMESPACE" \
+        "CAUSA_MCP_QUARKUS_METRICS_BASE_URL=${_QUARKUS_METRICS_BASE_URL}" \
+        >>"$LOG_FILE" 2>&1 || _patch_rc=$?
+    stop_spinner
+
+    if [[ $_patch_rc -eq 0 ]]; then
+        log_install_success "CAUSA_MCP_QUARKUS_METRICS_BASE_URL set to ${_QUARKUS_METRICS_BASE_URL}"
+        write_to_log_file "INFO" "Patched causa-backend: CAUSA_MCP_QUARKUS_METRICS_BASE_URL=${_QUARKUS_METRICS_BASE_URL}"
+    else
+        log_file_only "Failed to patch causa-backend (exit code: $_patch_rc) — set it manually:"
+        log_file_only "  kubectl set env deployment/causa-backend -n $NAMESPACE CAUSA_MCP_QUARKUS_METRICS_BASE_URL=${_QUARKUS_METRICS_BASE_URL}"
+        log_validation_success "CAUSA_MCP_QUARKUS_METRICS_BASE_URL patch (failed — set manually)"
+    fi
+fi
+
+# ===========================================================================
+# Step 3: Configure Causa Backend (LLM) — Phase 2
+# ===========================================================================
+# Phase 1 (create_llm_secrets) already ran before the installer.
+# Phase 2 posts the non-sensitive config keys to the now-running backend.
+# The GCP credential is NOT posted here — it is already available to the
+# backend via the K8s Secret created in Phase 1 and the
+# GOOGLE_APPLICATION_CREDENTIALS env var set in the deployment manifest.
 # ===========================================================================
 log_section "Step 3: Configuring Causa Backend (LLM)"
-
-if [[ -f "$_LLM_ENV_FILE" ]]; then
-    write_to_log_file "INFO" "Using LLM config loaded from: $_LLM_ENV_FILE"
-else
-    write_to_log_file "INFO" "llm.env not found — using exported environment variables"
-    write_to_log_file "INFO" "Copy llm.env.example to llm.env and fill in values to enable LLM RCA"
-fi
-
-# ── Auto-create causa-gcp-credentials K8s Secret from local key file ─────
-_GCP_KEY_FILE="$SCRIPT_DIR/causa-gcp-key.json"
-if [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" && -f "${GOOGLE_APPLICATION_CREDENTIALS}" ]]; then
-    _GCP_KEY_FILE="${GOOGLE_APPLICATION_CREDENTIALS}"
-fi
-
-if [[ "${LLM_PROVIDER:-}" == "vertex-ai-anthropic" || -n "${VERTEX_PROJECT_ID:-}" ]]; then
-    if kubectl get secret causa-gcp-credentials \
-            -n "$NAMESPACE" >>"$LOG_FILE" 2>&1; then
-        write_to_log_file "INFO" "causa-gcp-credentials secret already exists in $NAMESPACE"
-    elif [[ -f "$_GCP_KEY_FILE" ]]; then
-        start_spinner "Creating causa-gcp-credentials secret from $(basename "$_GCP_KEY_FILE")..."
-        if kubectl create secret generic causa-gcp-credentials \
-                --from-file="key.json=$_GCP_KEY_FILE" \
-                -n "$NAMESPACE" >>"$LOG_FILE" 2>&1; then
-            stop_spinner
-            log_install_success "causa-gcp-credentials secret created"
-        else
-            stop_spinner
-            log_file_only "Failed to create causa-gcp-credentials secret — check $LOG_FILE"
-        fi
-    else
-        write_to_log_file "WARN" "GCP key file not found at $_GCP_KEY_FILE"
-        write_to_log_file "WARN" "Place the GCP service-account key there to enable Vertex AI LLM RCA"
-    fi
-fi
-
-# ── Read GCP key back as a single-line base64 blob from the K8s Secret ───
-_GCP_B64=""
-if [[ "${LLM_PROVIDER:-}" == "vertex-ai-anthropic" || -n "${VERTEX_PROJECT_ID:-}" ]]; then
-    _GCP_B64=$(kubectl get secret causa-gcp-credentials \
-        -n "$NAMESPACE" \
-        -o "jsonpath={.data.key\.json}" \
-        2>>"$LOG_FILE" | tr -d '[:space:]' || true)
-    if [[ -z "$_GCP_B64" && -f "$_GCP_KEY_FILE" ]]; then
-        _GCP_B64=$(base64 < "$_GCP_KEY_FILE" | tr -d '[:space:]')
-    fi
-fi
-
-# ── Build POST /api/v1/configs payload ───────────────────────────────────
-# Use python3 to build a valid, properly escaped JSON payload for all providers
-_CONFIG_PAYLOAD=$(python3 - << 'PYEOF'
-import os, json
-
-configs = {}
-
-# Check provider and general LLM settings
-provider = os.getenv("LLM_PROVIDER", "").strip()
-model = os.getenv("LLM_MODEL_NAME", "").strip()
-api_key = os.getenv("LLM_API_KEY", "").strip()
-endpoint = os.getenv("LLM_ENDPOINT", "").strip()
-temperature = os.getenv("LLM_TEMPERATURE", "").strip()
-
-if provider:
-    configs["LLM_PROVIDER"] = provider
-if model:
-    configs["LLM_MODEL_NAME"] = model
-if api_key:
-    configs["LLM_API_KEY"] = api_key
-if endpoint:
-    configs["LLM_ENDPOINT"] = endpoint
-if temperature:
-    configs["LLM_TEMPERATURE"] = temperature
-
-# Vertex AI specific
-vertex_proj = os.getenv("VERTEX_PROJECT_ID", "").strip()
-vertex_loc = os.getenv("VERTEX_LOCATION", "").strip()
-gcp_b64 = os.getenv("_GCP_B64", "").strip()
-
-if vertex_proj:
-    configs["VERTEX_PROJECT_ID"] = vertex_proj
-if vertex_loc:
-    configs["VERTEX_LOCATION"] = vertex_loc
-if gcp_b64:
-    configs["GOOGLE_APPLICATION_CREDENTIALS"] = gcp_b64
-
-# Bob / custom provider specific
-bob_shell_path = os.getenv("BOB_SHELL_PATH", os.getenv("BOB_PATH", "")).strip()
-if bob_shell_path:
-    configs["BOB_SHELL_PATH"] = bob_shell_path
-
-print(json.dumps({"configs": configs}))
-PYEOF
-)
-
-# ── Push LLM config to Causa Backend if configured ───────────────────────
-_HAS_LLM_CONFIG=$(python3 -c "import json, os; p=json.loads('''$_CONFIG_PAYLOAD''').get('configs',{}); print('true' if len(p) > 0 else 'false')")
-
-if [[ "$_HAS_LLM_CONFIG" == "true" ]]; then
-    write_to_log_file "INFO" "Pushing LLM config (provider: ${LLM_PROVIDER:-auto}, model: ${LLM_MODEL_NAME:-default}) to Causa"
-
-    # ── Find running Causa Backend pod ───────────────────────────────────────
-    _CAUSA_POD=$(kubectl get pods \
-        -l "app=causa-backend" \
-        -n "$NAMESPACE" \
-        --field-selector="status.phase=Running" \
-        -o "jsonpath={.items[0].metadata.name}" \
-        2>>"$LOG_FILE" || true)
-
-    if [[ -z "$_CAUSA_POD" ]]; then
-        write_to_log_file "WARN" "Causa Backend pod not running — skipping config push (RCA will run without LLM)"
-    else
-        start_spinner "Pushing config to Causa Backend (up to 5 attempts)..."
-        _cfg_rc=1
-        for _attempt in 1 2 3 4 5; do
-            _cfg_rc=0
-            kubectl exec -n "$NAMESPACE" "$_CAUSA_POD" -- \
-                curl -sf --max-time 10 \
-                -X POST "http://localhost:8080/api/v1/configs" \
-                -H "Content-Type: application/json" \
-                -d "$_CONFIG_PAYLOAD" \
-                >>"$LOG_FILE" 2>&1 || _cfg_rc=$?
-
-            if [[ $_cfg_rc -eq 0 ]]; then
-                break
-            fi
-            write_to_log_file "INFO" "Config push attempt ${_attempt}/5 failed (rc=${_cfg_rc}) — retrying in 10s..."
-            [[ $_attempt -lt 5 ]] && sleep 10
-        done
-        stop_spinner
-        if [[ $_cfg_rc -eq 0 ]]; then
-            log_install_success "Causa Backend configured (LLM config pushed)"
-        else
-            log_file_only "Config push failed after 5 attempts (non-fatal — RCA will run without LLM)"
-            log_validation_success "Causa config push (failed — check $LOG_FILE)"
-        fi
-    fi
-else
-    write_to_log_file "INFO" "No LLM provider configured — Causa Backend will use default settings / heuristic RCA"
-    log_validation_success "Causa Backend LLM config (skipped — no provider set in llm.env)"
-fi
+configure_llm_runtime "$LLM_ENV_FILE" "$NAMESPACE"
 
 # ===========================================================================
 # Step 4: Register Causa MCP + install skill (optional)
 # ===========================================================================
 
-# ── 4a: Always write .mcp.json to the repo root ──────────────────────────
-# .mcp.json is the cross-IDE project-level MCP standard. Any IDE that
-# supports MCP (Claude shell, Cursor, Windsurf, VS Code Copilot, Gemini CLI)
-# auto-loads this file when the developer opens or cd's into the project —
-# no per-user setup required.
+# ── 4a: Write the correct MCP config file for the detected IDE ───────────
+# Bob IDE reads .bob/mcp.json; every other IDE (Claude Code CLI, Cursor,
+# Windsurf, VS Code Copilot, Gemini CLI) reads the cross-IDE .mcp.json at
+# the repo root.
+# Routing:
+#   Bob skill path  → write .bob/mcp.json; remove stale entry from .mcp.json
+#   other skill path→ write .mcp.json; remove stale entry from .bob/mcp.json
+#   no --skill-path → write both (safe default for any IDE)
 _MCP_JSON_PATH="${SCRIPT_DIR}/../.mcp.json"
-log_section "Step 4: Writing project-level .mcp.json"
-start_spinner "Writing .mcp.json to repo root..."
-_mcp_json_rc=1
-if command_exists python3; then
-    python3 - "$_MCP_JSON_PATH" "$CAUSA_MCP_URL" << 'PYEOF'
-import json, sys, os
-path, url = sys.argv[1], sys.argv[2]
-cfg = {}
-if os.path.isfile(path):
-    try:
-        with open(path) as f:
-            cfg = json.load(f)
-    except json.JSONDecodeError:
-        cfg = {}
-cfg.setdefault("mcpServers", {})["causa-rca"] = {
-    "type": "http",
-    "url": url + "/mcp"
-}
-with open(path, "w") as f:
-    json.dump(cfg, f, indent=2)
-    f.write("\n")
-print("ok")
-PYEOF
-    _mcp_json_rc=$?
+_BOB_MCP_JSON_PATH="${SCRIPT_DIR}/../.bob/mcp.json"
+
+# Detect whether the user is configuring Bob
+_IS_BOB_SKILL_PATH=false
+if [[ -n "$SKILL_PATH" ]]; then
+    _expanded_skill_path="${SKILL_PATH/#\~/$HOME}"
+    if [[ "$_expanded_skill_path" == *"/.bob/"* || "$_expanded_skill_path" == *"/.bob" || "$_expanded_skill_path" == ".bob/"* ]]; then
+        _IS_BOB_SKILL_PATH=true
+    fi
 fi
-stop_spinner
-if [[ $_mcp_json_rc -eq 0 ]]; then
-    log_install_success ".mcp.json written (${_MCP_JSON_PATH})"
-    write_to_log_file "INFO" ".mcp.json path: $_MCP_JSON_PATH"
+
+log_section "Step 4: Writing project-level MCP config"
+
+if [[ "$TARGET" == "openshift" ]]; then
+    # OpenShift: Causa MCP is cluster-hosted — the URL is not reachable from
+    # the local filesystem, so writing .mcp.json / .bob/mcp.json here would
+    # embed an inaccessible address.  Skip the write and print instructions.
+    log_install_success "MCP config write skipped (target=openshift — see manual instructions printed at end)"
+    write_to_log_file "INFO" "target=openshift: .mcp.json / .bob/mcp.json not written — manual MCP registration required"
+elif [[ "$_IS_BOB_SKILL_PATH" == "true" ]]; then
+    # Bob IDE: write .bob/mcp.json; remove stale entry from .mcp.json if present
+    start_spinner "Writing .bob/mcp.json for Bob IDE..."
+    _bob_mcp_json_rc=1
+    if command_exists python3; then
+        _write_mcp_entry "$_BOB_MCP_JSON_PATH"
+        _bob_mcp_json_rc=$?
+    fi
+    stop_spinner
+    if [[ $_bob_mcp_json_rc -eq 0 ]]; then
+        log_install_success ".bob/mcp.json written (${_BOB_MCP_JSON_PATH})"
+        write_to_log_file "INFO" ".bob/mcp.json path: $_BOB_MCP_JSON_PATH"
+    else
+        log_file_only "Failed to write .bob/mcp.json — add manually via Bob Settings → MCP → Edit Project MCP"
+        log_validation_success ".bob/mcp.json (failed — add manually)"
+    fi
+    # Remove stale causa-rca from .mcp.json left by a previous non-Bob run
+    if [[ -f "$_MCP_JSON_PATH" ]] && command_exists python3; then
+        _remove_mcp_entry "$_MCP_JSON_PATH" >>"$LOG_FILE" 2>&1 || true
+        write_to_log_file "INFO" "Removed stale causa-rca entry from .mcp.json (Bob run)"
+    fi
+elif [[ -n "$SKILL_PATH" ]]; then
+    # Explicit non-Bob skill path (e.g. Claude): write .mcp.json; remove stale entry from .bob/mcp.json if present
+    start_spinner "Writing .mcp.json to repo root..."
+    _mcp_json_rc=1
+    if command_exists python3; then
+        _write_mcp_entry "$_MCP_JSON_PATH"
+        _mcp_json_rc=$?
+    fi
+    stop_spinner
+    if [[ $_mcp_json_rc -eq 0 ]]; then
+        log_install_success ".mcp.json written (${_MCP_JSON_PATH})"
+        write_to_log_file "INFO" ".mcp.json path: $_MCP_JSON_PATH"
+    else
+        log_file_only "Failed to write .mcp.json — add manually"
+        log_validation_success ".mcp.json (failed — add manually)"
+    fi
+    # Remove stale causa-rca from .bob/mcp.json left by a previous Bob run
+    if [[ -f "$_BOB_MCP_JSON_PATH" ]] && command_exists python3; then
+        _remove_mcp_entry "$_BOB_MCP_JSON_PATH" >>"$LOG_FILE" 2>&1 || true
+        write_to_log_file "INFO" "Removed stale causa-rca entry from .bob/mcp.json (non-Bob run)"
+    fi
 else
-    log_file_only "Failed to write .mcp.json — add manually"
-    log_validation_success ".mcp.json (failed — add manually)"
+    # No --skill-path given: write both so any IDE works out of the box
+    start_spinner "Writing .mcp.json and .bob/mcp.json..."
+    _mcp_json_rc=1; _bob_mcp_json_rc=1
+    if command_exists python3; then
+        _write_mcp_entry "$_MCP_JSON_PATH"
+        _mcp_json_rc=$?
+        _write_mcp_entry "$_BOB_MCP_JSON_PATH"
+        _bob_mcp_json_rc=$?
+    fi
+    stop_spinner
+    if [[ $_mcp_json_rc -eq 0 ]]; then
+        log_install_success ".mcp.json written (${_MCP_JSON_PATH})"
+        write_to_log_file "INFO" ".mcp.json path: $_MCP_JSON_PATH"
+    else
+        log_file_only "Failed to write .mcp.json — add manually"
+        log_validation_success ".mcp.json (failed — add manually)"
+    fi
+    if [[ $_bob_mcp_json_rc -eq 0 ]]; then
+        log_install_success ".bob/mcp.json written (${_BOB_MCP_JSON_PATH})"
+        write_to_log_file "INFO" ".bob/mcp.json path: $_BOB_MCP_JSON_PATH"
+    else
+        log_file_only "Failed to write .bob/mcp.json — add manually via Bob Settings → MCP → Edit Project MCP"
+        log_validation_success ".bob/mcp.json (failed — add manually)"
+    fi
 fi
 
 # ── 4b: Install SKILL.md to user-supplied path (optional) ────────────────
@@ -865,7 +945,7 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
     echo -e "  Check for memory issues, use existing diagnostics if present, otherwise run a fresh RCA, and show the fix.${COLOR_RESET}"
     echo ""
     echo -e "${COLOR_CYAN}Your AI assistant will:${COLOR_RESET}"
-    echo -e "  1. Use the Causa MCP tools registered via .mcp.json"
+    echo -e "  1. Use the Causa MCP tools registered in your IDE"
     echo -e "  2. Check existing diagnostics before starting a duplicate RCA"
     echo -e "  3. Initiate RCA for ${WORKLOAD_APP_NAME} in namespace ${NAMESPACE} when needed"
     echo -e "  4. Poll until COMPLETED, then present root cause + fix"
@@ -873,14 +953,65 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
     echo -e "${COLOR_CYAN}Note:${COLOR_RESET} You can prompt immediately — no need to wait for an OOMKill."
     echo -e "  Watch pod restarts: ${COLOR_BOLD}kubectl get pods -n ${NAMESPACE} -w${COLOR_RESET}"
     echo ""
-    echo -e "${COLOR_CYAN}Causa Backend:${COLOR_RESET} ${CAUSA_BACKEND_URL}/api/v1/diagnostics"
-    echo -e "${COLOR_CYAN}Causa MCP:${COLOR_RESET}     ${CAUSA_MCP_URL}/mcp"
-    echo -e "${COLOR_CYAN}Project MCP config:${COLOR_RESET} ${SCRIPT_DIR}/../.mcp.json"
-    echo ""
+    if [[ "$TARGET" != "openshift" ]]; then
+        echo -e "${COLOR_CYAN}Causa Backend:${COLOR_RESET} ${CAUSA_BACKEND_URL}/api/v1/diagnostics"
+        echo -e "${COLOR_CYAN}Causa MCP:${COLOR_RESET}     ${CAUSA_MCP_URL}/mcp"
+        if [[ "$_IS_BOB_SKILL_PATH" == "true" ]]; then
+            echo -e "${COLOR_CYAN}Bob MCP config:${COLOR_RESET}     ${SCRIPT_DIR}/../.bob/mcp.json"
+        else
+            echo -e "${COLOR_CYAN}Project MCP config:${COLOR_RESET} ${SCRIPT_DIR}/../.mcp.json"
+            if [[ -z "$SKILL_PATH" ]]; then
+                echo -e "${COLOR_CYAN}Bob MCP config:${COLOR_RESET}     ${SCRIPT_DIR}/../.bob/mcp.json"
+            fi
+        fi
+        echo ""
+    fi
+
+    # ── OpenShift: MCP registration + skill instructions ─────────────────────
+    if [[ "$TARGET" == "openshift" ]]; then
+        echo -e "${COLOR_CYAN}${COLOR_BOLD}----------------------------------------${COLOR_RESET}"
+        echo -e "${COLOR_BOLD_YELLOW}OpenShift target — MCP registration required:${COLOR_RESET}"
+        echo ""
+        echo -e "  The Causa MCP server is running inside the OpenShift cluster."
+        echo -e "  .mcp.json was NOT written automatically because the cluster URL"
+        echo -e "  is not a fixed localhost address."
+        echo ""
+        echo -e "  ${COLOR_BOLD}Step 1 — Find the Causa MCP route/service URL:${COLOR_RESET}"
+        echo -e "    oc get route causa-mcp -n ${NAMESPACE} -o jsonpath='{.spec.host}'"
+        echo -e "    # or, if no Route is exposed, port-forward:"
+        echo -e "    kubectl port-forward svc/causa-mcp-svc ${COLOR_BOLD}30005${COLOR_RESET}:8080 -n ${NAMESPACE} &"
+        echo -e "    # then use: http://localhost:30005"
+        echo ""
+        echo -e "  ${COLOR_BOLD}Step 2 — Register the MCP server in your IDE:${COLOR_RESET}"
+        echo ""
+        echo -e "  ${COLOR_BOLD}Bob IDE${COLOR_RESET} — add to .bob/mcp.json (or Bob Settings → MCP → Edit Project MCP):"
+        echo -e '    {'
+        echo -e '      "mcpServers": {'
+        echo -e '        "causa-rca": {'
+        echo -e '          "type": "http",'
+        echo -e '          "url": "http://<causa-mcp-route-or-forwarded-url>/mcp"'
+        echo -e '        }'
+        echo -e '      }'
+        echo -e '    }'
+        echo ""
+        echo -e "  ${COLOR_BOLD}Claude Code / Cursor / Windsurf / VS Code Copilot / Gemini CLI${COLOR_RESET}"
+        echo -e "  — add to .mcp.json at the repo root:"
+        echo -e '    {'
+        echo -e '      "mcpServers": {'
+        echo -e '        "causa-rca": {'
+        echo -e '          "type": "http",'
+        echo -e '          "url": "http://<causa-mcp-route-or-forwarded-url>/mcp"'
+        echo -e '        }'
+        echo -e '      }'
+        echo -e '    }'
+        echo ""
+        echo -e "${COLOR_CYAN}${COLOR_BOLD}----------------------------------------${COLOR_RESET}"
+        echo ""
+    fi
 
     # ── Skill setup summary ─────────────────────────────────────────────────
     echo -e "${COLOR_CYAN}${COLOR_BOLD}----------------------------------------${COLOR_RESET}"
-    echo -e "${COLOR_BOLD_YELLOW}Skill setup:${COLOR_RESET}"
+    echo -e "${COLOR_BOLD_YELLOW}Skill setup${COLOR_RESET}${COLOR_BOLD_YELLOW}$([[ "$TARGET" == "openshift" ]] && echo " (OpenShift target)"):${COLOR_RESET}"
     if [[ "$_SKILL_INSTALLED" == "true" ]]; then
         echo -e "  ${COLOR_BOLD_GREEN}✓ Installed to: ${_SKILL_INSTALL_PATH}${COLOR_RESET}"
         echo -e "  Your AI assistant will load it automatically from that location."

@@ -72,10 +72,15 @@ check_prerequisites() {
 # Verifies the Kubernetes API server is reachable before deployment starts.
 # Prints a clear error and returns non-zero when the cluster is not available.
 check_cluster_reachability() {
+    local _target="${1:-kind}"
     if ! kubectl cluster-info >>"$LOG_FILE" 2>&1; then
         log_error "Kubernetes API server is not reachable."
         log_error "Ensure your cluster is running and your kubeconfig is correct."
-        log_error "  kind target: run 'kind create cluster' first, or check 'kubectl cluster-info'."
+        if [[ "$_target" == "openshift" ]]; then
+            log_error "  openshift target: run 'oc login <cluster-url>' first, or check 'kubectl cluster-info'."
+        else
+            log_error "  kind target: run 'kind create cluster' first, or check 'kubectl cluster-info'."
+        fi
         return 1
     fi
     log_file_only "Kubernetes cluster is reachable"
