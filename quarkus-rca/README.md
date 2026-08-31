@@ -47,24 +47,28 @@ cd causa-demos/quarkus-rca
 # Skip installer if the Causa stack is already running
 ./demo.sh --skip-installer
 
-# Tear down everything when done
+# Tear down everything (keep cluster)
 ./demo.sh -t
+
+# Tear down everything including the Kind cluster
+./demo.sh -t --delete-cluster
 ```
 
 ### All options
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--target TARGET` | `kind` | Target platform (`kind`, `openshift`). Passed to `install.sh`. |
-| `-n NAMESPACE` | `causa-rca` | Kubernetes namespace for the RCA stack and workload. |
-| `--skill-path DIR` | — | Directory to install the `causa-rca` skill into (e.g. `~/.bob/skills`). |
-| `--skip-installer` | — | Skip running `install.sh` when the stack is already deployed. |
-| `--installer-url URL` | `https://github.com/causaai/installer` | Git URL of the installer repo. |
-| `--installer-branch BRANCH` | `mvp_demo` | Branch to check out from the installer repo. |
-| `--chaos-lab-url URL` | `https://github.com/causaai/chaos-lab.git` | Git URL of the chaos-lab repo. |
-| `--chaos-lab-branch BRANCH` | `main` | Branch to check out from the chaos-lab repo. |
-| `-t` | — | Terminate mode: clean up all resources. |
-| `-h` | — | Show help. |
+| Flag                        | Default                                    | Description                                                             |
+|-----------------------------|--------------------------------------------|-------------------------------------------------------------------------|
+| `--target TARGET`           | `kind`                                     | Target platform (`kind`, `openshift`). Passed to `install.sh`.          |
+| `-n NAMESPACE`              | `causa-rca`                                | Kubernetes namespace for the RCA stack and workload.                    |
+| `--skill-path DIR`          | —                                          | Directory to install the `causa-rca` skill into (e.g. `~/.bob/skills`). |
+| `--skip-installer`          | —                                          | Skip running `install.sh` when the stack is already deployed.           |
+| `--installer-url URL`       | `https://github.com/causaai/installer`     | Git URL of the installer repo.                                          |
+| `--installer-branch BRANCH` | `mvp_demo`                                 | Branch to check out from the installer repo.                            |
+| `--chaos-lab-url URL`       | `https://github.com/causaai/chaos-lab.git` | Git URL of the chaos-lab repo.                                          |
+| `--chaos-lab-branch BRANCH` | `main`                                     | Branch to check out from the chaos-lab repo.                            |
+| `-t`                        | —                                          | Terminate mode: clean up all resources (keeps the Kind cluster).        |
+| `--delete-cluster`          | —                                          | Also delete the Kind cluster. Must be used with `-t`.                   |
+| `-h`                        | —                                          | Show help.                                                              |
 
 ### Image overrides
 
@@ -107,7 +111,11 @@ Paste one of the ready prompts printed by the script into your AI assistant to t
 ## Cleanup
 
 ```bash
+# Remove workloads and Causa stack, keep the Kind cluster
 ./demo.sh -t
+
+# Remove everything including the Kind cluster
+./demo.sh -t --delete-cluster
 ```
 
 Demo log: `quarkus-rca/demo.log`
