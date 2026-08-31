@@ -25,7 +25,7 @@ Provisions a local Kubernetes cluster using Kind and installs all required compo
 **Prerequisites:**
 
 ```text
-kind      docker      kubectl      git      jq      python3
+kind      docker      kubectl      git      jq      python3     helm
 ```
 
 > Ollama requires CPU-only execution with a minimum of 4 vCPUs (6+ recommended), at least 8 GB RAM (16 GB recommended), and approximately 2.5–3 GB free disk space for the phi3:mini model weights.
@@ -52,20 +52,21 @@ cd causa-demos/kind
 
 ### 2. Quarkus RCA Demo
 
-An end-to-end demo that deploys a **quarkus-perf** workload engineered to OOMKill, installs the full Causa RCA stack (Causa Backend, Causa MCP, Kubernetes MCP Server, PostgreSQL, Prometheus), configures LLM credentials, and wires up **Bob IDE** for AI-powered root cause analysis.
+An end-to-end demo that deploys a **quarkus-perf** workload engineered for chaos testing, installs the full Causa RCA stack, configures LLM credentials, and wires up any MCP-capable AI assistant for AI-powered root cause analysis.
 
 **What the demo does:**
 
-- Provisions a Kind cluster and deploys the full Causa RCA stack via the [Quarkus RCA installer](https://github.com/gulati-aakriti/installer) _(personal fork, work in progress — the installer URL can be overridden via `--installer-url` if an official repo is available)_
-- Deploys **quarkus-perf** with chaos flags enabled (`CHAOS_MEMORY_CACHE_ENABLED=true`) — the workload leaks 192 KB of heap per transaction with no eviction, resulting in the workload being OOM-killed in approximately 3–5 minutes under load
-- Pushes LLM credentials (Vertex AI / Claude) and alert cooldown to Causa Backend
-- Registers the Causa MCP server in `~/.bob/settings/mcp.json` and installs the `causa-rca` skill into Bob IDE
-- Prints a ready-to-paste Bob IDE prompt for triggering RCA
+- Provisions the target environment (`kind` or `openshift`) and deploys the full Causa RCA stack via the [Causa RCA installer](https://github.com/causaai/installer)
+- Deploys **quarkus-perf** with chaos scenarios enabled (`large-response`, `idle-timeout`, `memory-cache`) and starts a load-gen job
+- Pushes LLM credentials to Causa Backend (Vertex AI, Bob, Anthropic, OpenAI, and others)
+- Writes `.mcp.json` to the repo root — auto-loaded by Claude Code, Cursor, Windsurf, VS Code Copilot, and Gemini CLI
+- Optionally installs the `causa-rca` skill to Bob or Claude Code via `--skill-path`
+- Prints ready-to-paste RCA prompts
 
 **Prerequisites:**
 
 ```text
-kind      kubectl     docker (or podman)     git     python3
+kind      kubectl      docker (or podman)      git      python3     helm
 ```
 
 **Quick start:**
@@ -76,7 +77,7 @@ cd causa-demos/quarkus-rca
 ./demo.sh
 ```
 
-See **[quarkus-rca/docs/SETUP.md](quarkus-rca/docs/SETUP.md)** for full prerequisites, LLM credential setup, CLI options, image overrides, Alertmanager configuration, and troubleshooting.
+See **[quarkus-rca/README.md](quarkus-rca/README.md)** for skill installation, LLM setup, and CLI options.
 
 **Cleanup:**
 
