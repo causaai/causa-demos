@@ -17,19 +17,6 @@ fi
 
 WORKLOAD_APP_NAME="${WORKLOAD_APP_NAME:-quarkus-perf}"
 
-cleanup_directory() {
-    local dir="$1"
-    [[ -z "$dir" ]] && { log_error "cleanup_directory requires a path"; return 1; }
-    if [[ -d "$dir" ]]; then
-        log_file_only "Removing directory: $dir"
-        rm -rf "$dir"
-        log_install_success "Directory removed: $(basename "$dir")"
-    else
-        log_file_only "Directory not found (already clean): $dir"
-    fi
-    return 0
-}
-
 delete_manifest() {
     local manifest="$1"
     local ns="${2:-default}"
@@ -164,6 +151,5 @@ terminate_demo() {
     return 0
 }
 
-export -f cleanup_directory
 export -f delete_manifest
 export -f terminate_demo
