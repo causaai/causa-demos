@@ -6,8 +6,9 @@ An end-to-end demo that deploys a **quarkus-perf** workload engineered for chaos
 
 ## What the Demo Does
 
-- Runs the [Causa RCA installer](https://github.com/causaai/installer) — provisions Causa Backend, Causa MCP, Kubernetes MCP Server, PostgreSQL, and Prometheus
+- Runs the [Causa RCA installer](https://github.com/causaai/installer) — provisions Causa Backend, Causa MCP, Kubernetes MCP Server, Quarkus MCP Server, Jafra Ecosystem, Jafra MCP Server, PostgreSQL, and Prometheus
 - Deploys **quarkus-perf** with all three chaos scenarios enabled (`large-response`, `idle-timeout`, `memory-cache`) and starts a load-gen job
+- Patches `causa-backend` with `CAUSA_MCP_QUARKUS_METRICS_BASE_URL` so the Quarkus MCP server scrapes live metrics from the workload
 - Pushes LLM credentials to Causa Backend (Vertex AI, Bob, Anthropic, OpenAI, and others)
 - Writes `.mcp.json` to the repo root — auto-loaded by Claude Code, Cursor, Windsurf, VS Code Copilot, and Gemini CLI
 - Optionally installs the `causa-rca` skill to Bob or Claude Code via `--skill-path`
@@ -72,7 +73,23 @@ cd causa-demos/quarkus-rca
 
 ### Image overrides
 
-`images.env` is sourced automatically at startup. Edit it directly to override the default container images passed to the installer (e.g. `CAUSA_BACKEND_IMAGE`, `K8S_MCP_SERVER_IMAGE`). Leave a variable unset or empty to use the installer's own default.
+`images.env` is sourced automatically at startup. Edit it directly to override the default container images passed to the installer (e.g. `CAUSA_BACKEND_IMAGE`, `K8S_MCP_SERVER_IMAGE`, `QUARKUS_MCP_IMAGE`, `JAFRA_MCP_IMAGE`). Leave a variable unset or empty to use the installer's own default.
+
+
+## MCP Server Registration
+
+`demo.sh` registers the **Causa MCP server** in `.mcp.json` (or `.bob/mcp.json` for Bob). The Quarkus MCP and JAFRA MCP servers run inside the cluster and are consumed by Causa Backend — they do not require separate IDE registration.
+
+```json
+{
+  "mcpServers": {
+    "causa-rca": {
+      "type": "http",
+      "url": "http://localhost:30005/mcp"
+    }
+  }
+}
+```
 
 ---
 
