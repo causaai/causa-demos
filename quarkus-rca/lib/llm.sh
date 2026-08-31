@@ -15,7 +15,9 @@
 #
 #   configure_llm_runtime  LLM_ENV_FILE  NAMESPACE
 #     Phase 2 — called AFTER the installer.
-#     POSTs config keys to /api/v1/configs. GCP credentials are never POSTed.
+#     POSTs config keys to /api/v1/configs, including
+#     GOOGLE_APPLICATION_CREDENTIALS as base64-encoded file contents for
+#     vertex-ai-anthropic (dual delivery: K8s Secret volume mount + config API).
 ################################################################################
 
 # Source guard
@@ -120,10 +122,12 @@ validate_llm_config() {
 # Phase 1 — create K8s secrets BEFORE the installer runs.
 #
 #   vertex-ai-anthropic:
-#     causa-gcp-credentials — the raw credentials file stored as key.json,
-#     mounted by the causa-backend deployment at
-#     /var/secrets/google/key.json via the GOOGLE_APPLICATION_CREDENTIALS
-#     env var (set in the deployment manifest).
+#     causa-gcp-credentials — the raw credentials file stored as key.json.
+#     Used by _patch_vertex_ai_credential_mount (called after the installer)
+#     to mount the secret at /var/secrets/google/key.json inside the pod.
+#     Additionally, configure_llm_runtime POSTs the credentials as a
+#     base64-encoded value via the config API so the backend can resolve ADC
+#     even when the volume mount is not yet present or is skipped.
 #
 #   anthropic | bob:
 #     causa-llm-secrets — LLM_API_KEY stored as a K8s secret.
@@ -238,8 +242,11 @@ create_llm_secrets() {
 #
 #   vertex-ai-anthropic:
 #     LLM_PROVIDER, LLM_MODEL_NAME, VERTEX_PROJECT_ID, VERTEX_LOCATION,
-#     GOOGLE_APPLICATION_CREDENTIALS (base64-encoded contents of the
-#     credentials file — works for both ADC JSON and service-account keys).
+#     GOOGLE_APPLICATION_CREDENTIALS (base64-encoded contents of the credentials
+#     file, piped through stdin — never passed as a command-line argument).
+#     Dual delivery: the K8s Secret volume mount (_patch_vertex_ai_credential_mount)
+#     and this config-API POST both supply credentials so the backend works
+#     regardless of which path resolves first.
 #
 #   anthropic:
 #     LLM_PROVIDER, LLM_MODEL_NAME, LLM_API_KEY.
@@ -375,11 +382,15 @@ print(', '.join(keys))
     local cfg_rc=1 attempt
     for attempt in 1 2 3 4 5; do
         cfg_rc=0
-        kubectl exec -n "$namespace" "$causa_pod" -- \
+        # Feed payload through stdin (-i/--stdin) so the credential-bearing JSON
+        # never appears in the kubectl exec or curl argument list, and therefore
+        # cannot be observed via ps, /proc, audit logs, or command tracing.
+        printf '%s' "$payload" | \
+        kubectl exec -i -n "$namespace" "$causa_pod" -- \
             curl -sf --max-time 10 \
             -X POST "http://localhost:8080/api/v1/configs" \
             -H "Content-Type: application/json" \
-            -d "$payload" \
+            -d @- \
             >>"${LOG_FILE}" 2>&1 || cfg_rc=$?
         [[ $cfg_rc -eq 0 ]] && break
         write_to_log_file "INFO" "Config push attempt ${attempt}/5 failed (rc=${cfg_rc}) — retrying in 10s..."
