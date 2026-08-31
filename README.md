@@ -56,7 +56,7 @@ An end-to-end demo that deploys a **quarkus-perf** workload engineered for chaos
 
 **What the demo does:**
 
-- Provisions the target environment (`kind` or `openshift`) and deploys the full Causa RCA stack via the [Quarkus RCA installer](https://github.com/causaai/installer)
+- Provisions the target environment (`kind` or `openshift`) and deploys the full Causa RCA stack via the [Causa RCA installer](https://github.com/causaai/installer)
 - Deploys **quarkus-perf** with chaos scenarios enabled (`large-response`, `idle-timeout`, `memory-cache`) and starts a load-gen job
 - Pushes LLM credentials to Causa Backend (Vertex AI, Bob, Anthropic, OpenAI, and others)
 - Writes `.mcp.json` to the repo root — auto-loaded by Claude Code, Cursor, Windsurf, VS Code Copilot, and Gemini CLI

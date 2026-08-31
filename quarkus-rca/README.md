@@ -6,7 +6,7 @@ An end-to-end demo that deploys a **quarkus-perf** workload engineered for chaos
 
 ## What the Demo Does
 
-- Runs the [Quarkus RCA installer](https://github.com/causaai/installer) — provisions Causa Backend, Causa MCP, Kubernetes MCP Server, PostgreSQL, and Prometheus
+- Runs the [Causa RCA installer](https://github.com/causaai/installer) — provisions Causa Backend, Causa MCP, Kubernetes MCP Server, PostgreSQL, and Prometheus
 - Deploys **quarkus-perf** with all three chaos scenarios enabled (`large-response`, `idle-timeout`, `memory-cache`) and starts a load-gen job
 - Pushes LLM credentials to Causa Backend (Vertex AI, Bob, Anthropic, OpenAI, and others)
 - Writes `.mcp.json` to the repo root — auto-loaded by Claude Code, Cursor, Windsurf, VS Code Copilot, and Gemini CLI
