@@ -29,7 +29,7 @@
 # Usage:  ./demo.sh [OPTIONS]
 # Run with -h for full option list.
 #
-# Prerequisites:  kind  kubectl  docker or podman  git  python3
+# Prerequisites:  kind (if target=kind)  kubectl  helm  docker or podman  git  python3
 #
 # To change installer repo or branch:
 #   INSTALLER_URL  and  INSTALLER_BRANCH  variables below (or use CLI flags).
@@ -198,7 +198,7 @@ show_help() {
     echo "    # Tear down everything including the Kind cluster"
     echo "    $0 -t --delete-cluster"
     echo ""
-    echo "Prerequisites:  kind (if target=kind)  kubectl  docker or podman  git  python3"
+    echo "Prerequisites:  kind (if target=kind)  kubectl  helm  docker or podman  git  python3"
     echo ""
 }
 

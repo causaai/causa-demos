@@ -18,10 +18,11 @@ An end-to-end demo that deploys a **quarkus-perf** workload engineered for chaos
 ## Prerequisites
 
 ```text
-kind      kubectl      docker (or podman)      git      python3     helm
+kind      kubectl      helm      docker (or podman)      git      python3
 ```
 
 - LLM credentials in `llm.env` (copy `llm.env.example` and fill in values)
+- `kind` is only required when using the default `--target kind`; for `--target openshift` a pre-existing cluster is required
 
 ---
 
@@ -40,9 +41,34 @@ cd causa-demos/quarkus-rca
 # Also install the causa-rca skill to Claude Code
 ./demo.sh --skill-path ~/.claude/skills
 
+# Deploy to an existing OpenShift cluster
+./demo.sh --target openshift -n my-rca
+
+# Skip installer if the Causa stack is already running
+./demo.sh --skip-installer
+
 # Tear down everything when done
 ./demo.sh -t
 ```
+
+### All options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--target TARGET` | `kind` | Target platform (`kind`, `openshift`). Passed to `install.sh`. |
+| `-n NAMESPACE` | `causa-rca` | Kubernetes namespace for the RCA stack and workload. |
+| `--skill-path DIR` | — | Directory to install the `causa-rca` skill into (e.g. `~/.bob/skills`). |
+| `--skip-installer` | — | Skip running `install.sh` when the stack is already deployed. |
+| `--installer-url URL` | `https://github.com/causaai/installer` | Git URL of the installer repo. |
+| `--installer-branch BRANCH` | `mvp_demo` | Branch to check out from the installer repo. |
+| `--chaos-lab-url URL` | `https://github.com/causaai/chaos-lab.git` | Git URL of the chaos-lab repo. |
+| `--chaos-lab-branch BRANCH` | `main` | Branch to check out from the chaos-lab repo. |
+| `-t` | — | Terminate mode: clean up all resources. |
+| `-h` | — | Show help. |
+
+### Image overrides
+
+`images.env` is sourced automatically at startup. Edit it directly to override the default container images passed to the installer (e.g. `CAUSA_BACKEND_IMAGE`, `K8S_MCP_SERVER_IMAGE`). Leave a variable unset or empty to use the installer's own default.
 
 ---
 
