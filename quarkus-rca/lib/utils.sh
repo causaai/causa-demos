@@ -214,9 +214,15 @@ patch_workload_manifest() {
 
     # ── Pass 2: pyyaml structural patch ───────────────────────────────────
     python3 - "$_sed_out" "$_output" << 'PYEOF'
-import sys, yaml
+import shutil
+import sys
 
 input_path, output_path = sys.argv[1], sys.argv[2]
+try:
+    import yaml
+except ImportError:
+    shutil.copyfile(input_path, output_path)
+    sys.exit(0)
 
 JAFRA_LABELS = {
     "jafra.io/enabled": "true",
@@ -226,28 +232,39 @@ JAFRA_ANNOTATION = {"jafra.io/containers": "quarkus-perf"}
 
 def patch_deployment(doc):
     """Patch a single Deployment document in-place."""
-    spec = doc.get("spec", {})
-    template = spec.get("template", {})
-    if template is None:
+    spec = doc.get("spec")
+    if not isinstance(spec, dict):
+        return
+    template = spec.get("template")
+    if not isinstance(template, dict):
         return
 
     # Remove pod-level securityContext (NOT the container-level one).
-    pod_spec = template.get("spec", {})
-    if pod_spec and "securityContext" in pod_spec:
+    pod_spec = template.get("spec")
+    if isinstance(pod_spec, dict) and "securityContext" in pod_spec:
         del pod_spec["securityContext"]
 
     # Ensure template.metadata exists.
-    meta = template.setdefault("metadata", {})
+    meta = template.get("metadata")
+    if not isinstance(meta, dict):
+        meta = {}
+        template["metadata"] = meta
 
     # Inject jafra labels (idempotent).
-    labels = meta.setdefault("labels", {})
+    labels = meta.get("labels")
+    if not isinstance(labels, dict):
+        labels = {}
+        meta["labels"] = labels
     for k, v in JAFRA_LABELS.items():
-        labels.setdefault(k, v)
+        labels[k] = v
 
     # Inject jafra annotation (idempotent).
-    annotations = meta.setdefault("annotations", {})
+    annotations = meta.get("annotations")
+    if not isinstance(annotations, dict):
+        annotations = {}
+        meta["annotations"] = annotations
     for k, v in JAFRA_ANNOTATION.items():
-        annotations.setdefault(k, v)
+        annotations[k] = v
 
 with open(input_path) as f:
     raw = f.read()
@@ -257,7 +274,7 @@ docs = list(yaml.safe_load_all(raw))
 
 patched = []
 for doc in docs:
-    if doc and doc.get("kind") == "Deployment":
+    if isinstance(doc, dict) and doc.get("kind") == "Deployment":
         patch_deployment(doc)
     patched.append(doc)
 

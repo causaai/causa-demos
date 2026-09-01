@@ -603,11 +603,12 @@ _jafra_ready=false
 for _i in $(seq 1 24); do
     _ready=$(kubectl get deployment jafra-controller -n "$NAMESPACE" \
         -o jsonpath='{.status.readyReplicas}' 2>>"$LOG_FILE" || true)
-    if [[ "$_ready" == "1" ]]; then
-        # Also verify the webhook cert is issued (caBundle non-empty)
+    if [[ "$_ready" =~ ^[0-9]+$ ]] && [[ "$_ready" -ge 1 ]]; then
+        # Also verify the webhook cert is issued (at least one caBundle is non-empty)
         _ca=$(kubectl get mutatingwebhookconfiguration jafra-controller \
-            -o jsonpath='{.webhooks[0].clientConfig.caBundle}' 2>>"$LOG_FILE" || true)
-        if [[ -n "$_ca" ]]; then
+            -o jsonpath='{.webhooks[*].clientConfig.caBundle}' 2>>"$LOG_FILE" || true)
+        _ca_clean=$(echo "$_ca" | tr -d '[:space:]')
+        if [[ -n "$_ca_clean" ]]; then
             _jafra_ready=true
             break
         fi
