@@ -565,12 +565,20 @@ if [[ ! -f "$WORKLOAD_MANIFEST" ]]; then
     exit 1
 fi
 
-sed \
-    -e "s/namespace: chaos-test/namespace: $NAMESPACE/g" \
-    -e "s/CHAOS_HTTP_IDLE_TIMEOUT_ENABLED: \"false\"/CHAOS_HTTP_IDLE_TIMEOUT_ENABLED: \"true\"/g" \
-    -e "s/CHAOS_HTTP_LARGE_RESPONSE_ENABLED: \"false\"/CHAOS_HTTP_LARGE_RESPONSE_ENABLED: \"true\"/g" \
-    -e "s/CHAOS_MEMORY_CACHE_ENABLED: \"false\"/CHAOS_MEMORY_CACHE_ENABLED: \"true\"/g" \
-    "$WORKLOAD_MANIFEST" > "$WORKLOAD_RENDERED_MANIFEST"
+# Render + patch the workload manifest via patch_workload_manifest (utils.sh):
+#   • substitutes namespace and enables chaos flags (sed pass)
+#   • removes pod-level securityContext, injects jafra labels/annotation (pyyaml pass)
+# Transforms are idempotent — safe on deploy-kind.yaml (already correct) and
+# deploy.yaml (fallback, needs the patches).
+start_spinner "Rendering workload manifest..."
+_render_rc=0
+patch_workload_manifest "$WORKLOAD_MANIFEST" "$WORKLOAD_RENDERED_MANIFEST" "$NAMESPACE" \
+    >>"$LOG_FILE" 2>&1 || _render_rc=$?
+stop_spinner
+if [[ $_render_rc -ne 0 ]]; then
+    log_error "Failed to render workload manifest: $WORKLOAD_MANIFEST"
+    exit 1
+fi
 if [[ -f "$LOAD_GEN_MANIFEST" ]]; then
     sed "s/namespace: chaos-test/namespace: $NAMESPACE/g" "$LOAD_GEN_MANIFEST" > "$LOAD_GEN_RENDERED_MANIFEST"
 fi
@@ -582,6 +590,37 @@ if ! ensure_namespace "$NAMESPACE"; then
     exit 1
 fi
 stop_spinner
+
+# ── Wait for jafra-controller webhook to be ready ─────────────────────────
+# The jafra-controller admission webhook injects the JFR agent into pods at
+# creation time. If quarkus-perf is deployed before the webhook is fully ready
+# (cert-manager issues TLS cert, pod starts, API server registers the webhook),
+# the mutation is silently skipped and the pod runs without JFR instrumentation.
+# This causes jafra-agent to find no .jfr files and report grpc_connected=0,
+# blocking RCA indefinitely in IN_PROGRESS state.
+start_spinner "Waiting for jafra-controller webhook to be ready (up to 120s)..."
+_jafra_ready=false
+for _i in $(seq 1 24); do
+    _ready=$(kubectl get deployment jafra-controller -n "$NAMESPACE" \
+        -o jsonpath='{.status.readyReplicas}' 2>>"$LOG_FILE" || true)
+    if [[ "$_ready" == "1" ]]; then
+        # Also verify the webhook cert is issued (caBundle non-empty)
+        _ca=$(kubectl get mutatingwebhookconfiguration jafra-controller \
+            -o jsonpath='{.webhooks[0].clientConfig.caBundle}' 2>>"$LOG_FILE" || true)
+        if [[ -n "$_ca" ]]; then
+            _jafra_ready=true
+            break
+        fi
+    fi
+    sleep 5
+done
+stop_spinner
+if [[ "$_jafra_ready" == "true" ]]; then
+    log_install_success "jafra-controller webhook is ready"
+else
+    log_file_only "jafra-controller webhook not ready within 120s — quarkus-perf may not be JFR-instrumented (check: kubectl get deployment jafra-controller -n $NAMESPACE)"
+    log_validation_success "jafra-controller readiness (timed out — continuing)"
+fi
 
 # ── Deploy quarkus-perf ──────────────────────────────────────────────────
 start_spinner "Deploying quarkus-perf workload..."
