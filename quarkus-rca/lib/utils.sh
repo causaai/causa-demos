@@ -340,6 +340,173 @@ get_pod_status() {
     fi
 }
 
+# wait_for_rollout <name> <namespace> [timeout]
+#
+# Blocks until the deployment's CURRENT rollout is fully complete — all old
+# ReplicaSet pods terminated and the new pod Ready.  Unlike
+# `kubectl wait --for=condition=available` (which can return mid-rollout while
+# the outgoing pod is still "available"), this does not return until the roll
+# has settled.  Callers use this before `kubectl port-forward` so the tunnel
+# attaches to the FINAL pod instead of one about to be deleted — otherwise the
+# tunnel dies with "lost connection to pod" as soon as the old pod is removed.
+wait_for_rollout() {
+    local name="$1"
+    local ns="${2:-default}"
+    local timeout="${3:-300}"
+    log_file_only "Waiting for rollout of $name in $ns to complete (timeout: ${timeout}s)..."
+    if ! kubectl rollout status deployment/"$name" -n "$ns" \
+            --timeout="${timeout}s" >>"$LOG_FILE" 2>&1; then
+        log_error "Rollout of $name did not complete within ${timeout}s"
+        kubectl get pods -n "$ns" -l "app=$name" >>"$LOG_FILE" 2>&1 || true
+        return 1
+    fi
+    log_file_only "Rollout of $name complete"
+    return 0
+}
+
+# ===========================================================================
+# Port-forward tunnels (kind target)
+# ===========================================================================
+# On kind the Causa Backend and MCP services are ClusterIP services (the
+# installer no longer publishes their NodePorts to the host), so they are
+# reached from the host exclusively via `kubectl port-forward`.  The tunnels
+# must OUTLIVE this script so the IDE / RCA session can keep hitting
+# http://localhost:<port> after demo.sh exits, so each tunnel is started with
+# `nohup ... &` + `disown` — it ignores the terminal hang-up and keeps its own
+# PID (nohup execs kubectl in place).
+#
+# Cleanup happens at the start of the next run (start_port_forwards calls
+# stop_port_forwards first) and on `-t` (terminate) — never on normal exit.
+#
+# There is deliberately NO self-healing restart loop: on a local kind cluster
+# the tunnel is stable for the length of a demo, and such a loop is what
+# previously spawned runaway orphaned "port-forward restarting" processes.
+# Killing the single kubectl process is therefore always sufficient.
+# ---------------------------------------------------------------------------
+
+# stop_port_forwards <pid_file> [<local_port> ...]
+#
+# Kills the tunnels recorded in <pid_file>, then (as a fallback for runs whose
+# pid file was lost) any kubectl port-forward still bound to the given local
+# ports, and removes the pid file.  Safe to call when nothing is running.
+stop_port_forwards() {
+    local _pid_file="$1"; shift
+    local _ports=("$@")
+    local _pid _lport
+
+    if [[ -n "$_pid_file" && -f "$_pid_file" ]]; then
+        while IFS= read -r _pid; do
+            [[ -z "$_pid" ]] && continue
+            if kill "$_pid" 2>/dev/null; then
+                write_to_log_file "INFO" "stop_port_forwards: killed tunnel PID $_pid"
+            fi
+        done < "$_pid_file"
+        rm -f "$_pid_file"
+    fi
+
+    # Fallback: no wrapper loop means killing kubectl directly is enough — it
+    # cannot respawn itself.
+    for _lport in "${_ports[@]}"; do
+        [[ -z "$_lport" ]] && continue
+        pkill -f "kubectl port-forward.*[[:space:]]${_lport}:" 2>/dev/null || true
+    done
+}
+
+# _pf_start_one <svc> <local_port> <svc_port> <namespace> <pid_file> <label>
+#
+# Starts one detached tunnel, records its PID, and verifies it survived the
+# first two seconds.  Returns 1 if the tunnel exited immediately.
+_pf_start_one() {
+    local _svc="$1" _lport="$2" _svc_port="$3" _ns="$4" _pid_file="$5" _label="$6"
+    nohup kubectl port-forward "svc/${_svc}" "${_lport}:${_svc_port}" -n "$_ns" \
+        >>"$LOG_FILE" 2>&1 &
+    local _pid=$!
+    # Detach the job so the shell never signals it on exit.  Use the no-argument
+    # form (disowns the most-recent background job) — bash 3.2 on macOS does not
+    # accept a raw PID here, only bash >= 4.0 does.  nohup already shields the
+    # process from SIGHUP, so this is belt-and-suspenders.
+    disown 2>/dev/null || true
+    echo "$_pid" >> "$_pid_file"
+
+    sleep 2
+    if ! kill -0 "$_pid" 2>/dev/null; then
+        log_error "port-forward for ${_label} exited immediately (svc/${_svc} ${_lport}:${_svc_port}) — check $LOG_FILE"
+        return 1
+    fi
+    write_to_log_file "INFO" "port-forward ${_label}: svc/${_svc} ${_lport}:${_svc_port} PID=${_pid}"
+    log_install_success "${_label} forwarded → http://localhost:${_lport} (PID ${_pid})"
+    return 0
+}
+
+# start_port_forwards <namespace> <pid_file> <backend_local_port> <mcp_local_port>
+#
+# Clears any stale tunnels, then starts detached port-forwards for the Causa
+# Backend and MCP services.  Service names/ports are discovered from the
+# cluster with conventional fallbacks.  Returns 0 once the backend tunnel is
+# reachable on localhost, 1 on any failure.
+start_port_forwards() {
+    local _ns="$1" _pid_file="$2" _backend_port="$3" _mcp_port="$4"
+
+    if [[ -z "$_ns" || -z "$_pid_file" || -z "$_backend_port" || -z "$_mcp_port" ]]; then
+        log_error "start_port_forwards requires namespace, pid_file, backend_port, mcp_port"
+        return 1
+    fi
+    if [[ "$_backend_port" == "$_mcp_port" ]]; then
+        log_error "start_port_forwards: backend_port and mcp_port must differ (both ${_backend_port})"
+        return 1
+    fi
+
+    # Clear tunnels from a previous run before rebinding the ports.
+    stop_port_forwards "$_pid_file" "$_backend_port" "$_mcp_port"
+    mkdir -p "$(dirname "$_pid_file")"
+    : > "$_pid_file"
+
+    # ── Discover services (fall back to conventional names/ports) ────────────
+    local _backend_svc _backend_svc_port _mcp_svc _mcp_svc_port
+    _backend_svc=$(kubectl get svc -n "$_ns" -l "app=causa-backend" \
+        -o jsonpath='{.items[0].metadata.name}' 2>>"$LOG_FILE" || true)
+    [[ -z "$_backend_svc" ]] && _backend_svc="causa-backend"
+    _backend_svc_port=$(kubectl get svc "$_backend_svc" -n "$_ns" \
+        -o jsonpath='{.spec.ports[0].port}' 2>>"$LOG_FILE" || true)
+    [[ -z "$_backend_svc_port" ]] && _backend_svc_port="8080"
+
+    _mcp_svc=$(kubectl get svc -n "$_ns" -l "app=causa-mcp" \
+        -o jsonpath='{.items[0].metadata.name}' 2>>"$LOG_FILE" || true)
+    [[ -z "$_mcp_svc" ]] && _mcp_svc="causa-mcp"
+    _mcp_svc_port=$(kubectl get svc "$_mcp_svc" -n "$_ns" \
+        -o jsonpath='{.spec.ports[0].port}' 2>>"$LOG_FILE" || true)
+    [[ -z "$_mcp_svc_port" ]] && _mcp_svc_port="8081"
+
+    # ── Start both tunnels ───────────────────────────────────────────────────
+    if ! _pf_start_one "$_backend_svc" "$_backend_port" "$_backend_svc_port" \
+            "$_ns" "$_pid_file" "causa-backend"; then
+        stop_port_forwards "$_pid_file" "$_backend_port" "$_mcp_port"
+        return 1
+    fi
+    if ! _pf_start_one "$_mcp_svc" "$_mcp_port" "$_mcp_svc_port" \
+            "$_ns" "$_pid_file" "causa-mcp"; then
+        stop_port_forwards "$_pid_file" "$_backend_port" "$_mcp_port"
+        return 1
+    fi
+
+    # ── Wait for the backend tunnel to be reachable ──────────────────────────
+    # Poll Quarkus health until HTTP 200 or 60s elapses so callers never race
+    # the tunnel coming up.
+    local _deadline=$(( $(date +%s) + 60 ))
+    while [[ $(date +%s) -lt $_deadline ]]; do
+        if curl -sf --max-time 3 "http://localhost:${_backend_port}/q/health" \
+                >>"$LOG_FILE" 2>&1; then
+            log_install_success "causa-backend reachable on localhost:${_backend_port}"
+            return 0
+        fi
+        sleep 3
+    done
+
+    log_error "causa-backend did not become reachable on localhost:${_backend_port} within 60s — cleaning up tunnels"
+    stop_port_forwards "$_pid_file" "$_backend_port" "$_mcp_port"
+    return 1
+}
+
 export -f start_timer
 export -f get_elapsed_time
 export -f command_exists
@@ -353,4 +520,8 @@ export -f ensure_namespace
 export -f patch_workload_manifest
 export -f apply_manifest
 export -f wait_for_deployment
+export -f wait_for_rollout
 export -f get_pod_status
+export -f stop_port_forwards
+export -f _pf_start_one
+export -f start_port_forwards
