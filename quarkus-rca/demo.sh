@@ -598,29 +598,35 @@ stop_spinner
 # the mutation is silently skipped and the pod runs without JFR instrumentation.
 # This causes jafra-agent to find no .jfr files and report grpc_connected=0,
 # blocking RCA indefinitely in IN_PROGRESS state.
-start_spinner "Waiting for jafra-controller webhook to be ready (up to 120s)..."
-_jafra_ready=false
-for _i in $(seq 1 24); do
-    _ready=$(kubectl get deployment jafra-controller -n "$NAMESPACE" \
-        -o jsonpath='{.status.readyReplicas}' 2>>"$LOG_FILE" || true)
-    if [[ "$_ready" =~ ^[0-9]+$ ]] && [[ "$_ready" -ge 1 ]]; then
-        # Also verify the webhook cert is issued (at least one caBundle is non-empty)
-        _ca=$(kubectl get mutatingwebhookconfiguration jafra-controller \
-            -o jsonpath='{.webhooks[*].clientConfig.caBundle}' 2>>"$LOG_FILE" || true)
-        _ca_clean=$(echo "$_ca" | tr -d '[:space:]')
-        if [[ -n "$_ca_clean" ]]; then
-            _jafra_ready=true
-            break
-        fi
-    fi
-    sleep 5
-done
-stop_spinner
-if [[ "$_jafra_ready" == "true" ]]; then
-    log_install_success "jafra-controller webhook is ready"
+# NOTE: jafra is not supported on OpenShift — skip this wait when target=openshift.
+if [[ "$TARGET" == "openshift" ]]; then
+    log_install_success "jafra-controller webhook wait skipped (not supported on OpenShift)"
+    write_to_log_file "INFO" "target=openshift: jafra-controller webhook check skipped"
 else
-    log_file_only "jafra-controller webhook not ready within 120s — quarkus-perf may not be JFR-instrumented (check: kubectl get deployment jafra-controller -n $NAMESPACE)"
-    log_validation_success "jafra-controller readiness (timed out — continuing)"
+    start_spinner "Waiting for jafra-controller webhook to be ready (up to 120s)..."
+    _jafra_ready=false
+    for _i in $(seq 1 24); do
+        _ready=$(kubectl get deployment jafra-controller -n "$NAMESPACE" \
+            -o jsonpath='{.status.readyReplicas}' 2>>"$LOG_FILE" || true)
+        if [[ "$_ready" =~ ^[0-9]+$ ]] && [[ "$_ready" -ge 1 ]]; then
+            # Also verify the webhook cert is issued (at least one caBundle is non-empty)
+            _ca=$(kubectl get mutatingwebhookconfiguration jafra-controller \
+                -o jsonpath='{.webhooks[*].clientConfig.caBundle}' 2>>"$LOG_FILE" || true)
+            _ca_clean=$(echo "$_ca" | tr -d '[:space:]')
+            if [[ -n "$_ca_clean" ]]; then
+                _jafra_ready=true
+                break
+            fi
+        fi
+        sleep 5
+    done
+    stop_spinner
+    if [[ "$_jafra_ready" == "true" ]]; then
+        log_install_success "jafra-controller webhook is ready"
+    else
+        log_file_only "jafra-controller webhook not ready within 120s — quarkus-perf may not be JFR-instrumented (check: kubectl get deployment jafra-controller -n $NAMESPACE)"
+        log_validation_success "jafra-controller readiness (timed out — continuing)"
+    fi
 fi
 
 # ── Deploy quarkus-perf ──────────────────────────────────────────────────
