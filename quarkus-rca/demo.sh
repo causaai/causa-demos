@@ -69,7 +69,14 @@ source "$UTILS_FILE"
 source "$UNINSTALL_FILE"
 source "$LLM_FILE"
 
-_demo_exit_trap() { trap '' INT TERM; stop_spinner; exit 130; }
+_demo_exit_trap() {
+    trap '' INT TERM
+    stop_spinner
+    if [[ -f "${PORTFORWARD_PID_FILE:-}" ]]; then
+        stop_port_forwards "$PORTFORWARD_PID_FILE" 2>/dev/null || true
+    fi
+    exit 130
+}
 trap '_demo_exit_trap' INT TERM
 
 # ---------------------------------------------------------------------------
