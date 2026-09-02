@@ -386,12 +386,22 @@ start_port_forwards() {
     fi
 
     # ── Kill any other process already holding the local ports ───────────────
+    # Only terminate processes that are confirmed kubectl port-forwards; for
+    # anything else, surface an error so the user can free the port manually
+    # rather than silently killing an unrelated local service.
     for _lport in "$_backend_port" "$_mcp_port"; do
         _holders=$(lsof -ti "tcp:${_lport}" 2>/dev/null || true)
         if [[ -n "$_holders" ]]; then
-            # shellcheck disable=SC2086
-            kill $_holders 2>/dev/null || true
-            write_to_log_file "INFO" "start_port_forwards: killed existing process on port ${_lport}"
+            for _holder_pid in $_holders; do
+                _holder_comm=$(ps -p "$_holder_pid" -o comm= 2>/dev/null || true)
+                if [[ "$_holder_comm" == "kubectl" ]]; then
+                    kill "$_holder_pid" 2>/dev/null || true
+                    write_to_log_file "INFO" "start_port_forwards: killed stale kubectl port-forward (PID ${_holder_pid}) on port ${_lport}"
+                else
+                    log_error "start_port_forwards: port ${_lport} is already in use by '${_holder_comm}' (PID ${_holder_pid}) — free the port and retry"
+                    return 1
+                fi
+            done
         fi
     done
 
@@ -432,44 +442,66 @@ start_port_forwards() {
         rm -f "$_pid_file"
     }
 
+    # ── Self-healing tunnel wrapper ───────────────────────────────────────────
+    # Runs kubectl port-forward in a tight loop so the tunnel is automatically
+    # restarted if it exits due to a pod restart, API connection loss, etc.
+    # The wrapper exits cleanly on SIGTERM (sent by stop_port_forwards /
+    # _cleanup_tunnels).  A 2-second back-off between restarts avoids a
+    # busy-loop when the service is permanently unavailable.
+    _run_tunnel() {
+        local _svc="$1" _local_port="$2" _svc_port="$3" _namespace="$4"
+        local _attempt=0
+        trap 'exit 0' TERM INT
+        while true; do
+            _attempt=$(( _attempt + 1 ))
+            if [[ $_attempt -gt 1 ]]; then
+                echo "$(date '+%Y-%m-%dT%H:%M:%S') [INFO] port-forward svc/${_svc} restarting (attempt ${_attempt})" >> "$LOG_FILE"
+                sleep 2
+            fi
+            kubectl port-forward \
+                "svc/${_svc}" \
+                "${_local_port}:${_svc_port}" \
+                -n "$_namespace" \
+                >>"$LOG_FILE" 2>&1 || true
+        done
+    }
+
     # ── Start causa-backend tunnel ────────────────────────────────────────────
     start_spinner "Starting port-forward: causa-backend → localhost:${_backend_port}..."
-    kubectl port-forward \
-        "svc/${_backend_svc}" \
-        "${_backend_port}:${_backend_svc_port}" \
-        -n "$_ns" \
-        >>"$LOG_FILE" 2>&1 &
+    _run_tunnel "$_backend_svc" "$_backend_port" "$_backend_svc_port" "$_ns" &
     local _pf_backend_pid=$!
+    # Record PID immediately so the EXIT trap can clean it up even if an
+    # interrupt arrives during the startup delay below.
+    echo "$_pf_backend_pid" >> "$_pid_file"
     stop_spinner
 
-    # Give kubectl ~2 s to fail fast (service not found, port conflict, etc.)
+    # Give the wrapper ~2 s to fail fast on the first attempt (service not
+    # found, port conflict, etc.).  If the wrapper itself has already exited
+    # the underlying service is permanently unavailable.
     sleep 2
     if ! kill -0 "$_pf_backend_pid" 2>/dev/null; then
         log_error "port-forward for causa-backend exited immediately (svc/${_backend_svc} ${_backend_port}:${_backend_svc_port}) — check $LOG_FILE"
+        _cleanup_tunnels "$_pf_backend_pid" "$_pf_backend_pid"
         return 1
     fi
-    echo "$_pf_backend_pid" >> "$_pid_file"
     write_to_log_file "INFO" "port-forward causa-backend: svc/${_backend_svc} ${_backend_port}:${_backend_svc_port} PID=${_pf_backend_pid}"
     log_install_success "causa-backend forwarded → http://localhost:${_backend_port} (PID ${_pf_backend_pid})"
 
     # ── Start causa-mcp tunnel ────────────────────────────────────────────────
     start_spinner "Starting port-forward: causa-mcp → localhost:${_mcp_port}..."
-    kubectl port-forward \
-        "svc/${_mcp_svc}" \
-        "${_mcp_port}:${_mcp_svc_port}" \
-        -n "$_ns" \
-        >>"$LOG_FILE" 2>&1 &
+    _run_tunnel "$_mcp_svc" "$_mcp_port" "$_mcp_svc_port" "$_ns" &
     local _pf_mcp_pid=$!
+    # Record PID immediately for the same reason as the backend above.
+    echo "$_pf_mcp_pid" >> "$_pid_file"
     stop_spinner
 
-    # Same liveness check for the MCP tunnel.
+    # Same liveness check for the MCP tunnel wrapper.
     sleep 2
     if ! kill -0 "$_pf_mcp_pid" 2>/dev/null; then
         log_error "port-forward for causa-mcp exited immediately (svc/${_mcp_svc} ${_mcp_port}:${_mcp_svc_port}) — check $LOG_FILE"
         _cleanup_tunnels "$_pf_backend_pid" "$_pf_mcp_pid"
         return 1
     fi
-    echo "$_pf_mcp_pid" >> "$_pid_file"
     write_to_log_file "INFO" "port-forward causa-mcp: svc/${_mcp_svc} ${_mcp_port}:${_mcp_svc_port} PID=${_pf_mcp_pid}"
     log_install_success "causa-mcp forwarded → http://localhost:${_mcp_port} (PID ${_pf_mcp_pid})"
 

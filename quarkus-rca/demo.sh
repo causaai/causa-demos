@@ -70,14 +70,13 @@ source "$UNINSTALL_FILE"
 source "$LLM_FILE"
 
 _demo_exit_trap() {
-    trap '' INT TERM
+    trap '' INT TERM EXIT
     stop_spinner
     if [[ -f "${PORTFORWARD_PID_FILE:-}" ]]; then
         stop_port_forwards "$PORTFORWARD_PID_FILE" 2>/dev/null || true
     fi
-    exit 130
 }
-trap '_demo_exit_trap' INT TERM
+trap '_demo_exit_trap' INT TERM EXIT
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -538,15 +537,19 @@ create_llm_secrets "$LLM_ENV_FILE" "$NAMESPACE"
 # Step 1.5: Start port-forward tunnels for causa-backend and causa-mcp
 # ===========================================================================
 # kind target only — on OpenShift the services are cluster-hosted and
-# reachable via Route; a local tunnel is neither needed nor useful.
+# reachable via Route; on other targets (vm, etc.) the connectivity model
+# is different and tunnels must be set up externally.
 # ===========================================================================
-if [[ "$TARGET" != "openshift" ]]; then
+if [[ "$TARGET" == "kind" ]]; then
     log_section "Step 1.5: Starting port-forward tunnels"
-    start_port_forwards \
-        "$NAMESPACE" \
-        "$CAUSA_BACKEND_LOCAL_PORT" \
-        "$CAUSA_MCP_LOCAL_PORT" \
-        "$PORTFORWARD_PID_FILE"
+    if ! start_port_forwards \
+            "$NAMESPACE" \
+            "$CAUSA_BACKEND_LOCAL_PORT" \
+            "$CAUSA_MCP_LOCAL_PORT" \
+            "$PORTFORWARD_PID_FILE"; then
+        cleanup
+        exit 1
+    fi
 fi
 
 # ===========================================================================
