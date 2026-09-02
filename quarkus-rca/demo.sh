@@ -106,9 +106,15 @@ INSTALLER_NAME="installer"
 INSTALLER_URL="${INSTALLER_URL:-https://github.com/causaai/installer}"
 INSTALLER_BRANCH="${INSTALLER_BRANCH:-mvp_demo}"
 
-# Causa MCP Server is on NodePort 30005 (see installer manifests/causa_mcp/deployment.yaml)
-CAUSA_MCP_URL="http://localhost:30005"
-CAUSA_BACKEND_URL="http://localhost:30001"
+# Local ports used for kubectl port-forward tunnels started after install.
+CAUSA_MCP_LOCAL_PORT="${CAUSA_MCP_LOCAL_PORT:-30005}"
+CAUSA_BACKEND_LOCAL_PORT="${CAUSA_BACKEND_LOCAL_PORT:-30001}"
+CAUSA_MCP_URL="http://localhost:${CAUSA_MCP_LOCAL_PORT}"
+CAUSA_BACKEND_URL="http://localhost:${CAUSA_BACKEND_LOCAL_PORT}"
+
+# File that records the PIDs of background port-forward processes so the
+# terminate path can kill them cleanly.
+PORTFORWARD_PID_FILE="${SCRIPT_DIR}/artifacts/.portforward.pids"
 
 # ---------------------------------------------------------------------------
 # Usage
@@ -522,9 +528,24 @@ fi
 create_llm_secrets "$LLM_ENV_FILE" "$NAMESPACE"
 
 # ===========================================================================
-# Step 1.5: Clone chaos-lab and locate quarkus-perf manifests
+# Step 1.5: Start port-forward tunnels for causa-backend and causa-mcp
 # ===========================================================================
-log_section "Step 1.5: Cloning chaos-lab to get quarkus-perf manifests"
+# kind target only — on OpenShift the services are cluster-hosted and
+# reachable via Route; a local tunnel is neither needed nor useful.
+# ===========================================================================
+if [[ "$TARGET" != "openshift" ]]; then
+    log_section "Step 1.5: Starting port-forward tunnels"
+    start_port_forwards \
+        "$NAMESPACE" \
+        "$CAUSA_BACKEND_LOCAL_PORT" \
+        "$CAUSA_MCP_LOCAL_PORT" \
+        "$PORTFORWARD_PID_FILE"
+fi
+
+# ===========================================================================
+# Step 1.6: Clone chaos-lab and locate quarkus-perf manifests
+# ===========================================================================
+log_section "Step 1.6: Cloning chaos-lab to get quarkus-perf manifests"
 
 start_spinner "Cloning chaos-lab (branch: $CHAOS_LAB_BRANCH)..."
 if ! clone_repo "$CHAOS_LAB_URL" "$CHAOS_LAB_DIR" "$CHAOS_LAB_BRANCH" \

@@ -340,6 +340,134 @@ get_pod_status() {
     fi
 }
 
+# start_port_forwards <namespace> <backend_local_port> <mcp_local_port> <pid_file>
+#
+# Starts background kubectl port-forward tunnels for causa-backend and
+# causa-mcp-server/causa-mcp-svc.  Service names and target ports are
+# discovered from the cluster; conventional names are used as fallbacks.
+# Any stale tunnels from a previous run (tracked by <pid_file> or already
+# occupying the local ports) are killed first.
+# PIDs are appended to <pid_file> so stop_port_forwards can clean them up.
+# Returns 0 when both tunnels are started, 1 if either kubectl call fails.
+start_port_forwards() {
+    local _ns="$1"
+    local _backend_port="$2"
+    local _mcp_port="$3"
+    local _pid_file="$4"
+
+    if [[ -z "$_ns" || -z "$_backend_port" || -z "$_mcp_port" || -z "$_pid_file" ]]; then
+        log_error "start_port_forwards requires namespace, backend_port, mcp_port, pid_file"
+        return 1
+    fi
+
+    # ── Kill stale PIDs from a previous run ──────────────────────────────────
+    if [[ -f "$_pid_file" ]]; then
+        while IFS= read -r _old_pid; do
+            kill "$_old_pid" 2>/dev/null || true
+        done < "$_pid_file"
+        rm -f "$_pid_file"
+        write_to_log_file "INFO" "start_port_forwards: stopped stale port-forward PIDs from $_pid_file"
+    fi
+
+    # ── Kill any other process already holding the local ports ───────────────
+    for _lport in "$_backend_port" "$_mcp_port"; do
+        _holders=$(lsof -ti "tcp:${_lport}" 2>/dev/null || true)
+        if [[ -n "$_holders" ]]; then
+            # shellcheck disable=SC2086
+            kill $_holders 2>/dev/null || true
+            write_to_log_file "INFO" "start_port_forwards: killed existing process on port ${_lport}"
+        fi
+    done
+
+    mkdir -p "$(dirname "$_pid_file")"
+
+    # ── Discover causa-backend service ───────────────────────────────────────
+    local _backend_svc _backend_svc_port
+    _backend_svc=$(kubectl get svc -n "$_ns" \
+        -l "app=causa-backend" \
+        -o jsonpath='{.items[0].metadata.name}' 2>>"$LOG_FILE" || true)
+    [[ -z "$_backend_svc" ]] && _backend_svc="causa-backend"
+
+    _backend_svc_port=$(kubectl get svc "$_backend_svc" -n "$_ns" \
+        -o jsonpath='{.spec.ports[0].port}' 2>>"$LOG_FILE" || true)
+    [[ -z "$_backend_svc_port" ]] && _backend_svc_port="8080"
+
+    # ── Discover causa-mcp service ───────────────────────────────────────────
+    local _mcp_svc _mcp_svc_port
+    _mcp_svc=$(kubectl get svc -n "$_ns" \
+        -l "app=causa-mcp" \
+        -o jsonpath='{.items[0].metadata.name}' 2>>"$LOG_FILE" || true)
+    if [[ -z "$_mcp_svc" ]]; then
+        _mcp_svc=$(kubectl get svc -n "$_ns" \
+            -l "app=causa-mcp-server" \
+            -o jsonpath='{.items[0].metadata.name}' 2>>"$LOG_FILE" || true)
+    fi
+    [[ -z "$_mcp_svc" ]] && _mcp_svc="causa-mcp-svc"
+
+    _mcp_svc_port=$(kubectl get svc "$_mcp_svc" -n "$_ns" \
+        -o jsonpath='{.spec.ports[0].port}' 2>>"$LOG_FILE" || true)
+    [[ -z "$_mcp_svc_port" ]] && _mcp_svc_port="8080"
+
+    # ── Start causa-backend tunnel ────────────────────────────────────────────
+    start_spinner "Starting port-forward: causa-backend → localhost:${_backend_port}..."
+    kubectl port-forward \
+        "svc/${_backend_svc}" \
+        "${_backend_port}:${_backend_svc_port}" \
+        -n "$_ns" \
+        >>"$LOG_FILE" 2>&1 &
+    local _pf_backend_pid=$!
+    echo "$_pf_backend_pid" >> "$_pid_file"
+    stop_spinner
+    write_to_log_file "INFO" "port-forward causa-backend: svc/${_backend_svc} ${_backend_port}:${_backend_svc_port} PID=${_pf_backend_pid}"
+    log_install_success "causa-backend forwarded → http://localhost:${_backend_port} (PID ${_pf_backend_pid})"
+
+    # ── Start causa-mcp tunnel ────────────────────────────────────────────────
+    start_spinner "Starting port-forward: causa-mcp → localhost:${_mcp_port}..."
+    kubectl port-forward \
+        "svc/${_mcp_svc}" \
+        "${_mcp_port}:${_mcp_svc_port}" \
+        -n "$_ns" \
+        >>"$LOG_FILE" 2>&1 &
+    local _pf_mcp_pid=$!
+    echo "$_pf_mcp_pid" >> "$_pid_file"
+    stop_spinner
+    write_to_log_file "INFO" "port-forward causa-mcp: svc/${_mcp_svc} ${_mcp_port}:${_mcp_svc_port} PID=${_pf_mcp_pid}"
+    log_install_success "causa-mcp forwarded → http://localhost:${_mcp_port} (PID ${_pf_mcp_pid})"
+
+    # Brief pause to let the tunnels establish before subsequent HTTP calls.
+    sleep 2
+    return 0
+}
+
+# stop_port_forwards <pid_file>
+#
+# Kills all background port-forward processes whose PIDs are recorded in
+# <pid_file>, then removes the file.  Silently ignores already-dead PIDs.
+stop_port_forwards() {
+    local _pid_file="$1"
+    if [[ -z "$_pid_file" ]]; then
+        log_error "stop_port_forwards requires a pid_file argument"
+        return 1
+    fi
+    if [[ ! -f "$_pid_file" ]]; then
+        log_file_only "stop_port_forwards: no PID file found at $_pid_file — nothing to stop"
+        return 0
+    fi
+    local _stopped=0
+    while IFS= read -r _pid; do
+        [[ -z "$_pid" ]] && continue
+        if kill "$_pid" 2>/dev/null; then
+            write_to_log_file "INFO" "stop_port_forwards: killed port-forward PID $_pid"
+            _stopped=$(( _stopped + 1 ))
+        else
+            write_to_log_file "INFO" "stop_port_forwards: PID $_pid already gone"
+        fi
+    done < "$_pid_file"
+    rm -f "$_pid_file"
+    log_install_success "Port-forward tunnels stopped (${_stopped} process(es))"
+    return 0
+}
+
 export -f start_timer
 export -f get_elapsed_time
 export -f command_exists
@@ -354,3 +482,5 @@ export -f patch_workload_manifest
 export -f apply_manifest
 export -f wait_for_deployment
 export -f get_pod_status
+export -f start_port_forwards
+export -f stop_port_forwards

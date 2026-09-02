@@ -147,6 +147,21 @@ terminate_demo() {
         log_validation_success "Installer cleanup (skipped — --skip-installer)"
     fi
 
+    # ── Step 3: Stop port-forward tunnels ────────────────────────────────────
+    local _pf_pid_file
+    _pf_pid_file="$(dirname "$demo_dir")/.portforward.pids"
+    # Also check inside the artifacts dir in case demo_dir IS the artifacts dir.
+    local _pf_pid_file_alt="${demo_dir}/.portforward.pids"
+    log_section "Stopping port-forward tunnels"
+    if [[ -f "$_pf_pid_file" ]]; then
+        stop_port_forwards "$_pf_pid_file"
+    elif [[ -f "$_pf_pid_file_alt" ]]; then
+        stop_port_forwards "$_pf_pid_file_alt"
+    else
+        log_file_only "No port-forward PID file found — tunnels may already be stopped"
+        log_validation_success "Port-forward cleanup (skipped — PID file not found)"
+    fi
+
     log_install_success "Cleanup completed"
     return 0
 }
