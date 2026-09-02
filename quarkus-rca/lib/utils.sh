@@ -184,6 +184,7 @@ ensure_namespace() {
 #               • add labels:  jafra.io/enabled: "true"
 #                              jafra.io/mode: "continuous"
 #               • add annotation: jafra.io/containers: "quarkus-perf"
+#               • add causa label: causa.ai/monitoring: "true"
 #             All transforms are idempotent.
 #   3. Writes the result preserving YAML document separators (---).
 #
@@ -230,6 +231,8 @@ JAFRA_LABELS = {
 }
 JAFRA_ANNOTATION = {"jafra.io/containers": "quarkus-perf"}
 
+CAUSA_LABELS = {"causa.ai/monitoring": "true"}
+
 def patch_deployment(doc):
     """Patch a single Deployment document in-place."""
     spec = doc.get("spec")
@@ -256,6 +259,10 @@ def patch_deployment(doc):
         labels = {}
         meta["labels"] = labels
     for k, v in JAFRA_LABELS.items():
+        labels[k] = v
+
+    # Inject causa labels (idempotent).
+    for k, v in CAUSA_LABELS.items():
         labels[k] = v
 
     # Inject jafra annotation (idempotent).
