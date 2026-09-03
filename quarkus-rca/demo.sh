@@ -328,21 +328,30 @@ PYEOF
 
 # Helper: merge causa-rca entry into an existing or new JSON file.
 # Creates the target directory if it does not exist; returns 1 if mkdir fails.
+# If the file exists but contains invalid JSON or a non-object mcpServers value,
+# the file is left untouched and the function exits with code 1.
 _write_mcp_entry() {
     local _target_path="$1"
     local _target_dir
     _target_dir="$(dirname "$_target_path")"
     mkdir -p "$_target_dir" || return 1
     python3 - "$_target_path" "$CAUSA_MCP_URL" << 'PYEOF'
-import json, sys, os
+import json, sys, os, shutil
 path, url = sys.argv[1], sys.argv[2]
 cfg = {}
 if os.path.isfile(path):
     try:
         with open(path) as f:
             cfg = json.load(f)
-    except json.JSONDecodeError:
-        cfg = {}
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"error: {path} contains invalid JSON — leaving file untouched: {e}", file=sys.stderr)
+        sys.exit(1)
+    servers = cfg.get("mcpServers")
+    if servers is not None and not isinstance(servers, dict):
+        print(f"error: {path} has mcpServers of type {type(servers).__name__}, expected object — leaving file untouched", file=sys.stderr)
+        sys.exit(1)
+    # Back up the file before modifying
+    shutil.copy2(path, path + ".bak")
 cfg.setdefault("mcpServers", {})["causa-rca"] = {
     "type": "http",
     "url": url + "/mcp"
@@ -368,6 +377,7 @@ if [[ "$TERMINATE" == "true" ]]; then
     terminate_demo "$NAMESPACE" "$DEMO_DIR" "$SKIP_INSTALLER" "$DELETE_CLUSTER" "$TARGET"
 
     # Remove causa-rca from all global MCP config files that exist.
+    # Only the causa-rca key is removed — all other servers are preserved.
     if command_exists python3; then
         for _global_mcp_path in "$_BOB_IDE_MCP_CONFIG" "$_BOB_SHELL_MCP_CONFIG" "$_CLAUDE_MCP_CONFIG"; do
             if [[ -f "$_global_mcp_path" ]]; then
@@ -803,9 +813,9 @@ _IS_BOB_SKILL_PATH=false
 _IS_CLAUDE_SKILL_PATH=false
 if [[ -n "$SKILL_PATH" ]]; then
     _expanded_skill_path="${SKILL_PATH/#\~/$HOME}"
-    if [[ "$_expanded_skill_path" == *"/.bob/"* || "$_expanded_skill_path" == *"/.bob" || "$_expanded_skill_path" == ".bob/"* ]]; then
+    if [[ "$_expanded_skill_path" == *"/.bob/"* || "$_expanded_skill_path" == *"/.bob" || "$_expanded_skill_path" == ".bob/"* || "$_expanded_skill_path" == ".bob" ]]; then
         _IS_BOB_SKILL_PATH=true
-    elif [[ "$_expanded_skill_path" == *"/.claude/"* || "$_expanded_skill_path" == *"/.claude" ]]; then
+    elif [[ "$_expanded_skill_path" == *"/.claude/"* || "$_expanded_skill_path" == *"/.claude" || "$_expanded_skill_path" == ".claude/"* || "$_expanded_skill_path" == ".claude" ]]; then
         _IS_CLAUDE_SKILL_PATH=true
     fi
 fi
