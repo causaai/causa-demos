@@ -537,20 +537,28 @@ create_llm_secrets "$LLM_ENV_FILE" "$NAMESPACE"
 # ---------------------------------------------------------------------------
 _OCP_MCP_ROUTE_MISSING=false
 if [[ "$TARGET" == "openshift" ]]; then
-    start_spinner "Fetching Causa MCP route (kubectl get route causa-mcp -n $NAMESPACE)..."
-    # Try the expected route name first.
-    _OCP_MCP_HOST=$(kubectl get route causa-mcp \
-        -n "$NAMESPACE" \
-        -o jsonpath='{.spec.host}' 2>>"$LOG_FILE" || true)
-    if [[ -z "$_OCP_MCP_HOST" ]]; then
-        # Fallback: list all routes and find the one whose destination service
-        # contains "causa-mcp". Output: "<service-name>\t<host>" per line.
-        _OCP_MCP_HOST=$(kubectl get route \
+    start_spinner "Waiting for Causa MCP route to be available (up to 30s)..."
+    _OCP_MCP_HOST=""
+    for _ocp_attempt in $(seq 1 6); do
+        # Try the expected route name first.
+        _OCP_MCP_HOST=$(kubectl get route causa-mcp \
             -n "$NAMESPACE" \
-            -o jsonpath='{range .items[*]}{.spec.to.name}{"\t"}{.spec.host}{"\n"}{end}' \
-            2>>"$LOG_FILE" \
-            | grep -i 'causa-mcp' | head -1 | awk '{print $2}' || true)
-    fi
+            -o jsonpath='{.spec.host}' 2>>"$LOG_FILE" || true)
+        if [[ -z "$_OCP_MCP_HOST" ]]; then
+            # Fallback: list all routes and find the one whose destination service
+            # contains "causa-mcp". Output: "<service-name>\t<host>" per line.
+            _OCP_MCP_HOST=$(kubectl get route \
+                -n "$NAMESPACE" \
+                -o jsonpath='{range .items[*]}{.spec.to.name}{"\t"}{.spec.host}{"\n"}{end}' \
+                2>>"$LOG_FILE" \
+                | grep -i 'causa-mcp' | head -1 | awk '{print $2}' || true)
+        fi
+        if [[ -n "$_OCP_MCP_HOST" ]]; then
+            break
+        fi
+        write_to_log_file "INFO" "Causa MCP route not yet available (attempt ${_ocp_attempt}/6) — retrying in 5s"
+        sleep 5
+    done
     stop_spinner
     if [[ -n "$_OCP_MCP_HOST" ]]; then
         CAUSA_MCP_URL="https://${_OCP_MCP_HOST}"
@@ -558,9 +566,9 @@ if [[ "$TARGET" == "openshift" ]]; then
         write_to_log_file "INFO" "OpenShift CAUSA_MCP_URL resolved to: ${CAUSA_MCP_URL}"
     else
         _OCP_MCP_ROUTE_MISSING=true
-        log_file_only "Could not resolve Causa MCP route — MCP config files will NOT be written automatically."
+        log_file_only "Could not resolve Causa MCP route after 30s — MCP config files will NOT be written automatically."
         log_file_only "  Run: kubectl get route -n ${NAMESPACE}  to find the route hostname."
-        log_validation_success "Causa MCP route (not found — MCP config will be skipped)"
+        log_validation_success "Causa MCP route (not found after 30s — MCP config will be skipped)"
     fi
 fi
 
@@ -1036,22 +1044,27 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
     echo ""
     if [[ "$_OCP_MCP_ROUTE_MISSING" == "true" ]]; then
         # Route lookup failed — the default CAUSA_MCP_URL is still localhost:30005
-        # which is wrong for OpenShift. Don't print it; print full manual steps instead.
+        # which is wrong for OpenShift. Printing manual steps.
         echo -e "${COLOR_CYAN}${COLOR_BOLD}----------------------------------------${COLOR_RESET}"
         echo -e "${COLOR_BOLD_YELLOW}Action required — register Causa MCP in your IDE:${COLOR_RESET}"
         echo ""
         echo -e "  The Causa MCP route could not be resolved automatically."
         echo ""
-        echo -e "  ${COLOR_BOLD}Step 1 — Find the route hostname:${COLOR_RESET}"
-        echo -e "    kubectl get route causa-mcp -n ${NAMESPACE} -o jsonpath='{.spec.host}'"
-        echo -e "    # or, if no Route is exposed, port-forward and use http://localhost:30005:"
-        echo -e "    kubectl port-forward svc/causa-mcp-svc 30005:8080 -n ${NAMESPACE} &"
+        echo -e "  ${COLOR_BOLD}Option A — use the OpenShift Route (recommended):${COLOR_RESET}"
+        echo -e "    1. Get the route hostname:"
+        echo -e "       kubectl get route causa-mcp -n ${NAMESPACE} -o jsonpath='{.spec.host}'"
+        echo -e "    2. Add to ~/.bob/mcp-config.json (Bob IDE):"
+        echo -e '       { "mcpServers": { "causa-rca": { "type": "http", "url": "https://<route-host>/mcp" } } }'
+        echo -e "    3. Add to ~/.mcp.json (Claude Code / Cursor / Windsurf / VS Code / Gemini CLI):"
+        echo -e '       { "mcpServers": { "causa-rca": { "type": "http", "url": "https://<route-host>/mcp" } } }'
         echo ""
-        echo -e "  ${COLOR_BOLD}Step 2 — Add to .bob/mcp.json${COLOR_RESET} (Bob IDE):"
-        echo -e '    { "mcpServers": { "causa-rca": { "type": "http", "url": "https://<route-host>/mcp" } } }'
-        echo ""
-        echo -e "  ${COLOR_BOLD}Step 2 — Add to .mcp.json${COLOR_RESET} (Claude Code / Cursor / Windsurf / VS Code Copilot / Gemini CLI):"
-        echo -e '    { "mcpServers": { "causa-rca": { "type": "http", "url": "https://<route-host>/mcp" } } }'
+        echo -e "  ${COLOR_BOLD}Option B — port-forward instead:${COLOR_RESET}"
+        echo -e "    1. Start the tunnel:"
+        echo -e "       kubectl port-forward svc/causa-mcp-svc 30005:8080 -n ${NAMESPACE} &"
+        echo -e "    2. Add to ~/.bob/mcp-config.json (Bob IDE):"
+        echo -e '       { "mcpServers": { "causa-rca": { "type": "http", "url": "http://localhost:30005/mcp" } } }'
+        echo -e "    3. Add to ~/.mcp.json (Claude Code / Cursor / Windsurf / VS Code / Gemini CLI):"
+        echo -e '       { "mcpServers": { "causa-rca": { "type": "http", "url": "http://localhost:30005/mcp" } } }'
         echo ""
         echo -e "${COLOR_CYAN}${COLOR_BOLD}----------------------------------------${COLOR_RESET}"
     else
