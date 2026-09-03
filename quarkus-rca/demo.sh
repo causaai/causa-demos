@@ -106,9 +106,21 @@ INSTALLER_NAME="installer"
 INSTALLER_URL="${INSTALLER_URL:-https://github.com/causaai/installer}"
 INSTALLER_BRANCH="${INSTALLER_BRANCH:-mvp_demo}"
 
-# Causa MCP Server is on NodePort 30005 (see installer manifests/causa_mcp/deployment.yaml)
+# On kind the Causa Backend/MCP are ClusterIP services reached via kubectl
+# port-forward (started in Step 4.5); these local ports are the tunnel endpoints.
 CAUSA_MCP_URL="http://localhost:30005"
 CAUSA_BACKEND_URL="http://localhost:30001"
+
+# ---------------------------------------------------------------------------
+# Port-forward tunnels (kind target only)
+# ---------------------------------------------------------------------------
+# On kind the Causa Backend / MCP services are reached from the host through
+# kubectl port-forward tunnels started near the end of the run.  They are
+# detached so they outlive demo.sh (the IDE keeps using the localhost URLs);
+# cleanup happens at the start of the next run and on terminate (-t).
+CAUSA_BACKEND_LOCAL_PORT=30001
+CAUSA_MCP_LOCAL_PORT=30005
+PORTFORWARD_PID_FILE="$DEMO_DIR/.portforward.pids"
 
 # ---------------------------------------------------------------------------
 # Usage
@@ -331,6 +343,13 @@ PYEOF
 # Terminate mode
 # ---------------------------------------------------------------------------
 if [[ "$TERMINATE" == "true" ]]; then
+    # Stop the port-forward tunnels started by a previous run — kind only, as
+    # tunnels are never started for other targets (openshift uses a Route).
+    if [[ "$TARGET" == "kind" ]]; then
+        stop_port_forwards "$PORTFORWARD_PID_FILE" \
+            "$CAUSA_BACKEND_LOCAL_PORT" "$CAUSA_MCP_LOCAL_PORT"
+    fi
+
     terminate_demo "$NAMESPACE" "$DEMO_DIR" "$SKIP_INSTALLER" "$DELETE_CLUSTER" "$TARGET"
 
     # Remove causa-rca from project-level .mcp.json (cross-IDE root)
@@ -930,6 +949,49 @@ else
 fi
 
 # ===========================================================================
+# Step 4.5: Start port-forward tunnels (kind target)
+# ===========================================================================
+# Done last, after Step 2.5 restarts causa-backend and Step 3 configures it,
+# so the tunnels attach to stable pods.  On openshift the services are reached
+# via a Route, so no host tunnels are needed.
+#
+# We wait for the ROLLOUT to fully complete (not just condition=available):
+# Step 2.5's `kubectl set env` mutates the causa-backend pod template, which
+# triggers a rolling replacement.  `--for=condition=available` can return while
+# the outgoing pod is still up, so a port-forward started then would bind the
+# old pod and die with "lost connection to pod" the moment it is deleted.
+# wait_for_rollout blocks until the new pod is the only one, so the tunnel
+# attaches to the final, stable pod.
+if [[ "$TARGET" == "kind" ]]; then
+    log_section "Step 4.5: Starting port-forward tunnels"
+
+    # Wait for both deployments' rollouts to settle before forwarding — kubectl
+    # port-forward binds one pod, so it must be the final post-rollout pod.
+    _pf_ready=true
+    if ! wait_for_rollout "causa-backend" "$NAMESPACE" 300; then
+        log_error "causa-backend rollout did not complete — cannot start port-forward tunnel"
+        _pf_ready=false
+    fi
+    if [[ "$_pf_ready" == "true" ]] && \
+       ! wait_for_rollout "causa-mcp" "$NAMESPACE" 300; then
+        log_error "causa-mcp rollout did not complete — cannot start port-forward tunnel"
+        _pf_ready=false
+    fi
+
+    if [[ "$_pf_ready" == "true" ]]; then
+        if start_port_forwards "$NAMESPACE" "$PORTFORWARD_PID_FILE" \
+                "$CAUSA_BACKEND_LOCAL_PORT" "$CAUSA_MCP_LOCAL_PORT"; then
+            log_validation_success "Port-forward tunnels"
+        else
+            log_error "Failed to start port-forward tunnels — the localhost URLs below may not work"
+            log_error "  Start them manually:"
+            log_error "    kubectl port-forward svc/causa-backend ${CAUSA_BACKEND_LOCAL_PORT}:8080 -n ${NAMESPACE} &"
+            log_error "    kubectl port-forward svc/causa-mcp ${CAUSA_MCP_LOCAL_PORT}:8081 -n ${NAMESPACE} &"
+        fi
+    fi
+fi
+
+# ===========================================================================
 # Step 5: Print ready prompts + skill setup instructions
 # ===========================================================================
 
@@ -1025,7 +1087,7 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
         echo -e "  ${COLOR_BOLD}Step 1 — Find the Causa MCP route/service URL:${COLOR_RESET}"
         echo -e "    oc get route causa-mcp -n ${NAMESPACE} -o jsonpath='{.spec.host}'"
         echo -e "    # or, if no Route is exposed, port-forward:"
-        echo -e "    kubectl port-forward svc/causa-mcp-svc ${COLOR_BOLD}30005${COLOR_RESET}:8080 -n ${NAMESPACE} &"
+        echo -e "    kubectl port-forward svc/causa-mcp ${COLOR_BOLD}30005${COLOR_RESET}:8081 -n ${NAMESPACE} &"
         echo -e "    # then use: http://localhost:30005"
         echo ""
         echo -e "  ${COLOR_BOLD}Step 2 — Register the MCP server in your IDE:${COLOR_RESET}"
