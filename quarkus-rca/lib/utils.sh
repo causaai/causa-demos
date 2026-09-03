@@ -489,18 +489,23 @@ start_port_forwards() {
 
     # ── Discover services (fall back to conventional names/ports) ────────────
     local _backend_svc _backend_svc_port _mcp_svc _mcp_svc_port
+    # Names/ports fall back to the installer's ClusterIP services
+    # (manifests/causa → causa-backend:8080, manifests/causa_mcp → causa-mcp:8081),
+    # both of which expose a port named "http".  Select that named port rather
+    # than .spec.ports[0] so we stay correct if the service ever grows a second
+    # port (e.g. the openshift backend service also has a "management" port).
     _backend_svc=$(kubectl get svc -n "$_ns" -l "app=causa-backend" \
         -o jsonpath='{.items[0].metadata.name}' 2>>"$LOG_FILE" || true)
     [[ -z "$_backend_svc" ]] && _backend_svc="causa-backend"
     _backend_svc_port=$(kubectl get svc "$_backend_svc" -n "$_ns" \
-        -o jsonpath='{.spec.ports[0].port}' 2>>"$LOG_FILE" || true)
+        -o jsonpath='{.spec.ports[?(@.name=="http")].port}' 2>>"$LOG_FILE" || true)
     [[ -z "$_backend_svc_port" ]] && _backend_svc_port="8080"
 
     _mcp_svc=$(kubectl get svc -n "$_ns" -l "app=causa-mcp" \
         -o jsonpath='{.items[0].metadata.name}' 2>>"$LOG_FILE" || true)
     [[ -z "$_mcp_svc" ]] && _mcp_svc="causa-mcp"
     _mcp_svc_port=$(kubectl get svc "$_mcp_svc" -n "$_ns" \
-        -o jsonpath='{.spec.ports[0].port}' 2>>"$LOG_FILE" || true)
+        -o jsonpath='{.spec.ports[?(@.name=="http")].port}' 2>>"$LOG_FILE" || true)
     [[ -z "$_mcp_svc_port" ]] && _mcp_svc_port="8081"
 
     # ── Start both tunnels ───────────────────────────────────────────────────
