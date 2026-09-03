@@ -110,8 +110,9 @@ INSTALLER_NAME="installer"
 INSTALLER_URL="${INSTALLER_URL:-https://github.com/causaai/installer}"
 INSTALLER_BRANCH="${INSTALLER_BRANCH:-mvp_demo}"
 
-# Causa MCP Server is on NodePort 30005 for kind (see installer manifests/causa_mcp/deployment.yaml)
-# For OpenShift this is resolved dynamically from the Route after the installer runs.
+# On kind the Causa Backend/MCP are ClusterIP services reached via kubectl
+# port-forward (started in Step 4.5); these local ports are the tunnel endpoints.
+# For OpenShift, CAUSA_MCP_URL is resolved dynamically from the Route after the installer runs.
 CAUSA_MCP_URL="http://localhost:30005"
 CAUSA_BACKEND_URL="http://localhost:30001"
 
