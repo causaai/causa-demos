@@ -4,31 +4,33 @@
 #
 # End-to-end demo that:
 #
-#   Step 1 — Runs install.sh from the quarkus-rca installer branch
-#             Provisions: Kind cluster (or OpenShift), Prometheus, k8s-mcp-server,
-#             Causa Backend, Causa MCP, PostgreSQL.
-#             Pass --target openshift to deploy onto an existing OpenShift cluster.
+#   Step 1   — Runs install.sh from the quarkus-rca installer branch
+#               Provisions: Kind cluster (or OpenShift), Prometheus, k8s-mcp-server,
+#               Causa Backend, Causa MCP, PostgreSQL.
+#               Pass --target openshift to deploy onto an existing OpenShift cluster.
 #
-#   Step 2 — Deploys the quarkus-perf workload + load-gen job
-#             into the causa-rca namespace on the target cluster.
-#             Uses deploy-openshift.yaml when --target openshift is set.
+#   Step 1.5 — Clones chaos-lab to get quarkus-perf manifests
 #
-#   Step 3 — Sources llm.env, creates credentials Secret, and pushes
-#             LLM config to Causa via POST /api/v1/configs
+#   Step 2   — Deploys the quarkus-perf workload + load-gen job
+#               into the causa-rca namespace on the target cluster.
+#               Uses deploy-openshift.yaml when --target openshift is set.
 #
-#   Step 4 — Writes .mcp.json / .bob/mcp.json to the repo root (cross-IDE
-#             MCP standard).  For target=kind uses the hardcoded localhost:30005
-#             NodePort URL.  For target=openshift the Causa MCP Route is fetched
-#             dynamically via 'oc get route' and the resolved https:// URL is
-#             written in place of the kind address — so re-running for a different
-#             target always overwrites the previous entry with the correct URL.
-#             If the route cannot be resolved, writing is skipped and manual
-#             instructions are printed.
-#             Optionally installs the causa-rca SKILL.md to a user-supplied
-#             path via --skill-path <dir>.
+#   Step 2.5 — Patches causa-backend with CAUSA_MCP_QUARKUS_METRICS_BASE_URL
 #
-#   Step 5 — Prints ready prompts, MCP registration instructions, and
-#             skill setup instructions
+#   Step 3   — Sources llm.env, creates credentials Secret, and pushes
+#               LLM config to Causa via POST /api/v1/configs
+#
+#   Step 4   — Optionally installs the causa-rca SKILL.md to a user-supplied
+#               path via --skill-path <dir>.
+#
+#   Step 4.5 — Starts port-forward tunnels (kind target only)
+#
+#   Step 5   — Writes Causa MCP config to global user-level IDE config files.
+#               For target=kind uses localhost:30005 (port-forward tunnel).
+#               For target=openshift fetches the Route URL dynamically.
+#
+#   Step 6   — Prints ready prompts, MCP registration instructions, and
+#               skill setup instructions
 #
 # Usage:  ./demo.sh [OPTIONS]
 # Run with -h for full option list.
@@ -165,16 +167,12 @@ show_help() {
     echo "      target=kind       → uses http://localhost:30005 (NodePort)"
     echo "      target=openshift  → runs 'oc get route causa-mcp -n <ns>' and uses"
     echo "                          the returned https:// Route URL"
-    echo "    It then writes the correct URL into MCP config based on --skill-path:"
-    echo "      --skill-path ~/.bob/skills   → writes .bob/mcp.json only (Bob IDE)"
-    echo "                                     removes stale causa-rca from .mcp.json"
-    echo "      --skill-path <other>         → writes .mcp.json only (cross-IDE root)"
-    echo "                                     removes stale causa-rca from .bob/mcp.json"
-    echo "      (no --skill-path)            → writes both .mcp.json and .bob/mcp.json"
+    echo "    It then writes the correct URL into the global MCP config based on --skill-path:"
+    echo "      --skill-path ~/.bob/skills   → writes ~/.bob/settings/mcp.json (Bob IDE)"
+    echo "                                     and ~/.bob/settings/mcp_settings.json (Bob Shell)"
+    echo "      --skill-path ~/.claude/...   → writes ~/.claude.json (Claude Code)"
+    echo "      (no --skill-path)            → writes all three (Bob IDE, Bob Shell, Claude Code)"
     echo "    Re-running for a different target always overwrites the previous entry."
-    echo "    Any IDE that supports the cross-IDE MCP standard (Claude Code CLI, Cursor,"
-    echo "    Windsurf, VS Code Copilot, Gemini CLI) auto-loads .mcp.json from the repo"
-    echo "    root. Bob reads .bob/mcp.json."
     echo ""
     echo "Skill installation:"
     echo "    Pass --skill-path <dir> to have the script copy SKILL.md to that location."
@@ -299,6 +297,13 @@ fi
 # path can call them without a forward-reference problem.
 # ---------------------------------------------------------------------------
 
+# Global MCP config file paths
+# Bob IDE reads ~/.bob/settings/mcp.json; Bob Shell reads ~/.bob/settings/mcp_settings.json.
+# Claude Code reads ~/.claude.json (top-level mcpServers key, user scope).
+_BOB_IDE_MCP_CONFIG="$HOME/.bob/settings/mcp.json"
+_BOB_SHELL_MCP_CONFIG="$HOME/.bob/settings/mcp_settings.json"
+_CLAUDE_MCP_CONFIG="$HOME/.claude.json"
+
 # Helper: remove the causa-rca entry from an existing JSON file.
 # Returns 0 on success, 1 on any error (including python3 failure).
 # No-op (exit 0) if the file does not exist or has no causa-rca key.
@@ -362,38 +367,24 @@ if [[ "$TERMINATE" == "true" ]]; then
 
     terminate_demo "$NAMESPACE" "$DEMO_DIR" "$SKIP_INSTALLER" "$DELETE_CLUSTER" "$TARGET"
 
-    # Remove causa-rca from project-level .mcp.json (cross-IDE root)
-    _MCP_JSON_PATH="${SCRIPT_DIR}/../.mcp.json"
-    if [[ -f "$_MCP_JSON_PATH" ]]; then
-        start_spinner "Removing Causa MCP from project .mcp.json..."
-        _remove_mcp_json_rc=1
-        if command_exists python3; then
-            _remove_mcp_entry "$_MCP_JSON_PATH"
-            _remove_mcp_json_rc=$?
-        fi
-        stop_spinner
-        if [[ $_remove_mcp_json_rc -eq 0 ]]; then
-            log_install_success "Causa MCP removed from project .mcp.json"
-        fi
-    fi
-
-    # Remove causa-rca from Bob project-level .bob/mcp.json (if it exists)
-    _BOB_MCP_JSON_PATH="${SCRIPT_DIR}/../.bob/mcp.json"
-    if [[ -f "$_BOB_MCP_JSON_PATH" ]]; then
-        start_spinner "Removing Causa MCP from .bob/mcp.json..."
-        _remove_bob_mcp_rc=1
-        if command_exists python3; then
-            _remove_mcp_entry "$_BOB_MCP_JSON_PATH"
-            _remove_bob_mcp_rc=$?
-        else
-            write_to_log_file "WARN" "python3 not available — could not remove causa-rca from .bob/mcp.json; remove it manually"
-        fi
-        stop_spinner
-        if [[ $_remove_bob_mcp_rc -eq 0 ]]; then
-            log_install_success "Causa MCP removed from .bob/mcp.json"
-        else
-            log_file_only "Failed to remove causa-rca from .bob/mcp.json — remove it manually (python3 required)"
-        fi
+    # Remove causa-rca from all global MCP config files that exist.
+    if command_exists python3; then
+        for _global_mcp_path in "$_BOB_IDE_MCP_CONFIG" "$_BOB_SHELL_MCP_CONFIG" "$_CLAUDE_MCP_CONFIG"; do
+            if [[ -f "$_global_mcp_path" ]]; then
+                start_spinner "Removing Causa MCP from ${_global_mcp_path}..."
+                _rm_rc=0
+                _remove_mcp_entry "$_global_mcp_path" >>"$LOG_FILE" 2>&1 || _rm_rc=$?
+                stop_spinner
+                if [[ $_rm_rc -eq 0 ]]; then
+                    log_install_success "Causa MCP removed from ${_global_mcp_path}"
+                else
+                    log_validation_success "Causa MCP not removed from ${_global_mcp_path} — invalid JSON, remove manually"
+                    write_to_log_file "WARN" "Failed to remove causa-rca from ${_global_mcp_path} — file may contain invalid JSON"
+                fi
+            fi
+        done
+    else
+        write_to_log_file "WARN" "python3 not available — could not remove causa-rca from global MCP configs; remove it manually"
     fi
 
     ELAPSED=$(get_elapsed_time "$SCRIPT_START_TIME")
@@ -803,105 +794,23 @@ log_section "Step 3: Configuring Causa Backend (LLM)"
 configure_llm_runtime "$LLM_ENV_FILE" "$NAMESPACE"
 
 # ===========================================================================
-# Step 4: Register Causa MCP + install skill (optional)
+# Step 4: Install skill (optional)
 # ===========================================================================
 
-# ── 4a: Write the correct MCP config file for the detected IDE ───────────
-# Bob IDE reads .bob/mcp.json; every other IDE (Claude Code CLI, Cursor,
-# Windsurf, VS Code Copilot, Gemini CLI) reads the cross-IDE .mcp.json at
-# the repo root.
-# Routing:
-#   Bob skill path  → write .bob/mcp.json; remove stale entry from .mcp.json
-#   other skill path→ write .mcp.json; remove stale entry from .bob/mcp.json
-#   no --skill-path → write both (safe default for any IDE)
-_MCP_JSON_PATH="${SCRIPT_DIR}/../.mcp.json"
-_BOB_MCP_JSON_PATH="${SCRIPT_DIR}/../.bob/mcp.json"
-
-# Detect whether the user is configuring Bob
+# Detect which IDE the skill path targets — used by both 4a (skill install)
+# and the MCP config write in Step 4.5 (after port-forwards are up).
 _IS_BOB_SKILL_PATH=false
+_IS_CLAUDE_SKILL_PATH=false
 if [[ -n "$SKILL_PATH" ]]; then
     _expanded_skill_path="${SKILL_PATH/#\~/$HOME}"
     if [[ "$_expanded_skill_path" == *"/.bob/"* || "$_expanded_skill_path" == *"/.bob" || "$_expanded_skill_path" == ".bob/"* ]]; then
         _IS_BOB_SKILL_PATH=true
+    elif [[ "$_expanded_skill_path" == *"/.claude/"* || "$_expanded_skill_path" == *"/.claude" ]]; then
+        _IS_CLAUDE_SKILL_PATH=true
     fi
 fi
 
-log_section "Step 4: Writing project-level MCP config"
-
-if [[ "$_OCP_MCP_ROUTE_MISSING" == "true" ]]; then
-    # OpenShift route lookup failed — cannot write a valid URL, skip and warn.
-    log_install_success "MCP config write skipped (OpenShift route not found — see manual instructions printed at end)"
-    write_to_log_file "INFO" "target=openshift: route not found — .mcp.json / .bob/mcp.json not written"
-elif [[ "$_IS_BOB_SKILL_PATH" == "true" ]]; then
-    # Bob IDE: write .bob/mcp.json; remove stale entry from .mcp.json if present
-    start_spinner "Writing .bob/mcp.json for Bob IDE..."
-    _bob_mcp_json_rc=1
-    if command_exists python3; then
-        _write_mcp_entry "$_BOB_MCP_JSON_PATH"
-        _bob_mcp_json_rc=$?
-    fi
-    stop_spinner
-    if [[ $_bob_mcp_json_rc -eq 0 ]]; then
-        log_install_success ".bob/mcp.json written (${_BOB_MCP_JSON_PATH})"
-        write_to_log_file "INFO" ".bob/mcp.json path: $_BOB_MCP_JSON_PATH"
-    else
-        log_file_only "Failed to write .bob/mcp.json — add manually via Bob Settings → MCP → Edit Project MCP"
-        log_validation_success ".bob/mcp.json (failed — add manually)"
-    fi
-    # Remove stale causa-rca from .mcp.json left by a previous non-Bob run
-    if [[ -f "$_MCP_JSON_PATH" ]] && command_exists python3; then
-        _remove_mcp_entry "$_MCP_JSON_PATH" >>"$LOG_FILE" 2>&1 || true
-        write_to_log_file "INFO" "Removed stale causa-rca entry from .mcp.json (Bob run)"
-    fi
-elif [[ -n "$SKILL_PATH" ]]; then
-    # Explicit non-Bob skill path (e.g. Claude): write .mcp.json; remove stale entry from .bob/mcp.json if present
-    start_spinner "Writing .mcp.json to repo root..."
-    _mcp_json_rc=1
-    if command_exists python3; then
-        _write_mcp_entry "$_MCP_JSON_PATH"
-        _mcp_json_rc=$?
-    fi
-    stop_spinner
-    if [[ $_mcp_json_rc -eq 0 ]]; then
-        log_install_success ".mcp.json written (${_MCP_JSON_PATH})"
-        write_to_log_file "INFO" ".mcp.json path: $_MCP_JSON_PATH"
-    else
-        log_file_only "Failed to write .mcp.json — add manually"
-        log_validation_success ".mcp.json (failed — add manually)"
-    fi
-    # Remove stale causa-rca from .bob/mcp.json left by a previous Bob run
-    if [[ -f "$_BOB_MCP_JSON_PATH" ]] && command_exists python3; then
-        _remove_mcp_entry "$_BOB_MCP_JSON_PATH" >>"$LOG_FILE" 2>&1 || true
-        write_to_log_file "INFO" "Removed stale causa-rca entry from .bob/mcp.json (non-Bob run)"
-    fi
-else
-    # No --skill-path given: write both so any IDE works out of the box
-    start_spinner "Writing .mcp.json and .bob/mcp.json..."
-    _mcp_json_rc=1; _bob_mcp_json_rc=1
-    if command_exists python3; then
-        _write_mcp_entry "$_MCP_JSON_PATH"
-        _mcp_json_rc=$?
-        _write_mcp_entry "$_BOB_MCP_JSON_PATH"
-        _bob_mcp_json_rc=$?
-    fi
-    stop_spinner
-    if [[ $_mcp_json_rc -eq 0 ]]; then
-        log_install_success ".mcp.json written (${_MCP_JSON_PATH})"
-        write_to_log_file "INFO" ".mcp.json path: $_MCP_JSON_PATH"
-    else
-        log_file_only "Failed to write .mcp.json — add manually"
-        log_validation_success ".mcp.json (failed — add manually)"
-    fi
-    if [[ $_bob_mcp_json_rc -eq 0 ]]; then
-        log_install_success ".bob/mcp.json written (${_BOB_MCP_JSON_PATH})"
-        write_to_log_file "INFO" ".bob/mcp.json path: $_BOB_MCP_JSON_PATH"
-    else
-        log_file_only "Failed to write .bob/mcp.json — add manually via Bob Settings → MCP → Edit Project MCP"
-        log_validation_success ".bob/mcp.json (failed — add manually)"
-    fi
-fi
-
-# ── 4b: Install SKILL.md to user-supplied path (optional) ────────────────
+# ── 4a: Install SKILL.md to user-supplied path (optional) ────────────────
 # Invoked only when --skill-path DIR is passed. The script resolves the
 # target file name and any tool-specific handling automatically:
 #
@@ -1041,7 +950,58 @@ if [[ "$TARGET" == "kind" ]]; then
 fi
 
 # ===========================================================================
-# Step 5: Print ready prompts + skill setup instructions
+# Step 5: Write global MCP config
+# ===========================================================================
+
+log_section "Step 5: Writing global MCP config"
+
+# Helper: Stopping the spinner before printing ensures the success/failure line is
+# never interleaved with the spinning cursor.
+_write_and_log_mcp() {
+    local _path="$1"
+    local _label="$2"
+    local _manual_hint="$3"
+    local _rc=1
+    if command_exists python3; then
+        _write_mcp_entry "$_path" >>"$LOG_FILE" 2>&1
+        _rc=$?
+    fi
+    stop_spinner
+    if [[ $_rc -eq 0 ]]; then
+        log_install_success "${_label} written (${_path})"
+        write_to_log_file "INFO" "${_label} path: $_path"
+    else
+        log_file_only "Failed to write ${_label} — ${_manual_hint}"
+        log_validation_success "${_label} (failed — add manually)"
+    fi
+}
+
+if [[ "$_OCP_MCP_ROUTE_MISSING" == "true" ]]; then
+    # OpenShift route lookup failed — cannot write a valid URL, skip and warn.
+    log_install_success "MCP config write skipped (OpenShift route not found — see manual instructions printed at end)"
+    write_to_log_file "INFO" "target=openshift: route not found — global MCP configs not written"
+elif [[ "$_IS_BOB_SKILL_PATH" == "true" ]]; then
+    # Bob: write both Bob IDE and Bob Shell global configs
+    start_spinner "Writing ~/.bob/settings/mcp.json (Bob IDE)..."
+    _write_and_log_mcp "$_BOB_IDE_MCP_CONFIG"   "~/.bob/settings/mcp.json"             "add manually via Bob Settings → MCP → Edit Global MCP"
+    start_spinner "Writing ~/.bob/settings/mcp_settings.json (Bob Shell)..."
+    _write_and_log_mcp "$_BOB_SHELL_MCP_CONFIG" "~/.bob/settings/mcp_settings.json"  "add manually to ~/.bob/settings/mcp_settings.json"
+elif [[ "$_IS_CLAUDE_SKILL_PATH" == "true" ]]; then
+    # Claude Code: write user-scope global config
+    start_spinner "Writing ~/.claude.json (Claude Code)..."
+    _write_and_log_mcp "$_CLAUDE_MCP_CONFIG" "~/.claude.json" "add manually to ~/.claude.json under mcpServers"
+else
+    # No --skill-path: write all three so both Bob and Claude Code work out of the box
+    start_spinner "Writing ~/.bob/settings/mcp.json (Bob IDE)..."
+    _write_and_log_mcp "$_BOB_IDE_MCP_CONFIG"   "~/.bob/settings/mcp.json"             "add manually via Bob Settings → MCP → Edit Global MCP"
+    start_spinner "Writing ~/.bob/settings/mcp_settings.json (Bob Shell)..."
+    _write_and_log_mcp "$_BOB_SHELL_MCP_CONFIG" "~/.bob/settings/mcp_settings.json"  "add manually to ~/.bob/settings/mcp_settings.json"
+    start_spinner "Writing ~/.claude.json (Claude Code)..."
+    _write_and_log_mcp "$_CLAUDE_MCP_CONFIG"     "~/.claude.json"                     "add manually to ~/.claude.json under mcpServers"
+fi
+
+# ===========================================================================
+# Step 6: Print ready prompts + skill setup instructions
 # ===========================================================================
 
 # Discover current quarkus-perf pod name (may be empty right after deploy)
@@ -1121,17 +1081,17 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
         echo -e "  ${COLOR_BOLD}Option A — use the OpenShift Route (recommended):${COLOR_RESET}"
         echo -e "    1. Get the route hostname:"
         echo -e "       kubectl get route causa-mcp -n ${NAMESPACE} -o jsonpath='{.spec.host}'"
-        echo -e "    2. Add to ~/.bob/mcp-config.json (Bob IDE):"
+        echo -e "    2. Add to ~/.bob/settings/mcp.json (Bob IDE) and ~/.bob/settings/mcp_settings.json (Bob Shell):"
         echo -e '       { "mcpServers": { "causa-rca": { "type": "http", "url": "https://<route-host>/mcp" } } }'
-        echo -e "    3. Add to ~/.mcp.json (Claude Code / Cursor / Windsurf / VS Code / Gemini CLI):"
+        echo -e "    3. Add to ~/.claude.json (Claude Code):"
         echo -e '       { "mcpServers": { "causa-rca": { "type": "http", "url": "https://<route-host>/mcp" } } }'
         echo ""
         echo -e "  ${COLOR_BOLD}Option B — port-forward instead:${COLOR_RESET}"
         echo -e "    1. Start the tunnel:"
         echo -e "       kubectl port-forward svc/causa-mcp-svc 30005:8080 -n ${NAMESPACE} &"
-        echo -e "    2. Add to ~/.bob/mcp-config.json (Bob IDE):"
+        echo -e "    2. Add to ~/.bob/settings/mcp.json (Bob IDE) and ~/.bob/settings/mcp_settings.json (Bob Shell):"
         echo -e '       { "mcpServers": { "causa-rca": { "type": "http", "url": "http://localhost:30005/mcp" } } }'
-        echo -e "    3. Add to ~/.mcp.json (Claude Code / Cursor / Windsurf / VS Code / Gemini CLI):"
+        echo -e "    3. Add to ~/.claude.json (Claude Code):"
         echo -e '       { "mcpServers": { "causa-rca": { "type": "http", "url": "http://localhost:30005/mcp" } } }'
         echo ""
         echo -e "${COLOR_CYAN}${COLOR_BOLD}----------------------------------------${COLOR_RESET}"
@@ -1140,14 +1100,38 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
         if [[ "$TARGET" != "openshift" ]]; then
             echo -e "${COLOR_CYAN}Causa Backend:${COLOR_RESET} ${CAUSA_BACKEND_URL}/api/v1/diagnostics"
         fi
+        echo ""
+        echo -e "${COLOR_CYAN}${COLOR_BOLD}----------------------------------------${COLOR_RESET}"
         if [[ "$_IS_BOB_SKILL_PATH" == "true" ]]; then
-            echo -e "${COLOR_CYAN}Bob MCP config:${COLOR_RESET}     ${SCRIPT_DIR}/../.bob/mcp.json"
+            echo -e "${COLOR_BOLD_GREEN}MCP config registered for Bob:${COLOR_RESET}"
+            echo -e "  ${_BOB_IDE_MCP_CONFIG}  (Bob IDE)"
+            echo -e "  ${_BOB_SHELL_MCP_CONFIG}  (Bob Shell)"
+        elif [[ "$_IS_CLAUDE_SKILL_PATH" == "true" ]]; then
+            echo -e "${COLOR_BOLD_GREEN}MCP config registered for Claude Code:${COLOR_RESET}"
+            echo -e "  ${_CLAUDE_MCP_CONFIG}"
         else
-            echo -e "${COLOR_CYAN}Project MCP config:${COLOR_RESET} ${SCRIPT_DIR}/../.mcp.json"
-            if [[ -z "$SKILL_PATH" ]]; then
-                echo -e "${COLOR_CYAN}Bob MCP config:${COLOR_RESET}     ${SCRIPT_DIR}/../.bob/mcp.json"
+            echo -e "${COLOR_BOLD_GREEN}MCP config registered for Bob and Claude Code:${COLOR_RESET}"
+            echo -e "  ${_BOB_IDE_MCP_CONFIG}  (Bob IDE)"
+            echo -e "  ${_BOB_SHELL_MCP_CONFIG}  (Bob Shell)"
+            echo -e "  ${_CLAUDE_MCP_CONFIG}  (Claude Code)"
+            echo ""
+            echo -e "${COLOR_BOLD_YELLOW}Using a different IDE?${COLOR_RESET} Add the entry below to your IDE's global MCP config file:"
+            echo ""
+            if [[ "$TARGET" == "openshift" ]]; then
+                echo -e "  ${COLOR_BOLD}# OpenShift — https Route${COLOR_RESET}"
+            else
+                echo -e "  ${COLOR_BOLD}# kind — localhost port-forward${COLOR_RESET}"
             fi
+            echo -e '  {'
+            echo -e '    "mcpServers": {'
+            echo -e '      "causa-rca": {'
+            echo -e '        "type": "http",'
+            echo -e "        \"url\": \"${CAUSA_MCP_URL}/mcp\""
+            echo -e '      }'
+            echo -e '    }'
+            echo -e '  }'
         fi
+        echo -e "${COLOR_CYAN}${COLOR_BOLD}----------------------------------------${COLOR_RESET}"
     fi
     echo ""
 
@@ -1180,7 +1164,7 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
         echo -e "    cp ${SCRIPT_DIR}/../skills/causa-rca/SKILL.md ~/.claude/skills/causa-rca/SKILL.md"
         echo -e "  ${COLOR_BOLD}  Or re-run:${COLOR_RESET} $0 --skill-path ~/.claude/skills"
         echo ""
-        echo -e "  ${COLOR_BOLD}Cursor / Windsurf / other IDEs${COLOR_RESET}"
+        echo -e "  ${COLOR_BOLD}Other IDEs${COLOR_RESET}"
         echo -e "    Copy SKILL.md content into your IDE's rules/instructions file."
     fi
     echo -e "${COLOR_CYAN}${COLOR_BOLD}----------------------------------------${COLOR_RESET}"

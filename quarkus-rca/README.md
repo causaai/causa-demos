@@ -10,7 +10,7 @@ An end-to-end demo that deploys a **quarkus-perf** workload engineered for chaos
 - Deploys **quarkus-perf** with all three chaos scenarios enabled (`large-response`, `idle-timeout`, `memory-cache`) and starts a load-gen job
 - Patches `causa-backend` with `CAUSA_MCP_QUARKUS_METRICS_BASE_URL` so the Quarkus MCP server scrapes live metrics from the workload
 - Pushes LLM credentials to Causa Backend (Vertex AI, Bob, Anthropic, OpenAI, and others)
-- Writes `.mcp.json` to the repo root — auto-loaded by Claude Code, Cursor, Windsurf, VS Code Copilot, and Gemini CLI
+- Writes Causa MCP config to global user-level files (`~/.bob/settings/mcp.json`, `~/.bob/settings/mcp_settings.json`, `~/.claude.json`)
 - Optionally installs the `causa-rca` skill to Bob or Claude Code via `--skill-path`
 - Prints ready-to-paste RCA prompts
 
