@@ -404,11 +404,15 @@ stop_port_forwards() {
         rm -f "$_pid_file"
     fi
 
-    # Fallback: no wrapper loop means killing kubectl directly is enough — it
-    # cannot respawn itself.
+    # Fallback (only reached when the pid file was lost): kill orphaned demo
+    # tunnels by matching our own launch form, `kubectl port-forward svc/causa-*
+    # <local_port>:`.  The `svc/causa-` prefix scopes the match to THIS demo's
+    # services so we never kill an unrelated `kubectl port-forward` a developer
+    # happens to be running on the same local port from another terminal.  No
+    # wrapper loop means killing kubectl directly is enough — it cannot respawn.
     for _lport in "${_ports[@]}"; do
         [[ -z "$_lport" ]] && continue
-        pkill -f "kubectl port-forward.*[[:space:]]${_lport}:" 2>/dev/null || true
+        pkill -f "kubectl port-forward svc/causa-[a-z]* ${_lport}:" 2>/dev/null || true
     done
 }
 
@@ -436,6 +440,28 @@ _pf_start_one() {
     write_to_log_file "INFO" "port-forward ${_label}: svc/${_svc} ${_lport}:${_svc_port} PID=${_pid}"
     log_install_success "${_label} forwarded → http://localhost:${_lport} (PID ${_pid})"
     return 0
+}
+
+# _pf_wait_reachable <local_port> <label> [timeout_secs]
+#
+# Polls the Quarkus health endpoint through the tunnel until it answers or the
+# timeout elapses.  A live kubectl PID is NOT proof the tunnel works: kubectl
+# port-forward binds the local socket and keeps running even when the stream to
+# the pod fails, so this exercises the tunnel end to end.  Both causa-backend
+# and causa-mcp are Quarkus apps exposing /q/health.
+_pf_wait_reachable() {
+    local _lport="$1" _label="$2" _timeout="${3:-60}"
+    local _deadline=$(( $(date +%s) + _timeout ))
+    while [[ $(date +%s) -lt $_deadline ]]; do
+        if curl -sf --max-time 3 "http://localhost:${_lport}/q/health" \
+                >>"$LOG_FILE" 2>&1; then
+            log_install_success "${_label} reachable on localhost:${_lport}"
+            return 0
+        fi
+        sleep 3
+    done
+    log_error "${_label} did not become reachable on localhost:${_lport} within ${_timeout}s"
+    return 1
 }
 
 # start_port_forwards <namespace> <pid_file> <backend_local_port> <mcp_local_port>
@@ -489,22 +515,19 @@ start_port_forwards() {
         return 1
     fi
 
-    # ── Wait for the backend tunnel to be reachable ──────────────────────────
-    # Poll Quarkus health until HTTP 200 or 60s elapses so callers never race
-    # the tunnel coming up.
-    local _deadline=$(( $(date +%s) + 60 ))
-    while [[ $(date +%s) -lt $_deadline ]]; do
-        if curl -sf --max-time 3 "http://localhost:${_backend_port}/q/health" \
-                >>"$LOG_FILE" 2>&1; then
-            log_install_success "causa-backend reachable on localhost:${_backend_port}"
-            return 0
-        fi
-        sleep 3
-    done
-
-    log_error "causa-backend did not become reachable on localhost:${_backend_port} within 60s — cleaning up tunnels"
-    stop_port_forwards "$_pid_file" "$_backend_port" "$_mcp_port"
-    return 1
+    # ── Verify BOTH tunnels are usable end to end ────────────────────────────
+    # Probe each service's Quarkus health endpoint so callers never race the
+    # tunnels coming up, and so a tunnel whose kubectl process is alive but whose
+    # pod stream is failing is treated as a failure rather than a success.
+    if ! _pf_wait_reachable "$_backend_port" "causa-backend" 60; then
+        stop_port_forwards "$_pid_file" "$_backend_port" "$_mcp_port"
+        return 1
+    fi
+    if ! _pf_wait_reachable "$_mcp_port" "causa-mcp" 60; then
+        stop_port_forwards "$_pid_file" "$_backend_port" "$_mcp_port"
+        return 1
+    fi
+    return 0
 }
 
 export -f start_timer
@@ -524,4 +547,5 @@ export -f wait_for_rollout
 export -f get_pod_status
 export -f stop_port_forwards
 export -f _pf_start_one
+export -f _pf_wait_reachable
 export -f start_port_forwards
