@@ -1,61 +1,36 @@
 # causa-demos
 
-### This Repository contains the demos for CAUSA AI
+> Runnable demos that showcase **Causa AI** capabilities in Kubernetes environments.
 
-This repository provides runnable demos to showcase CAUSA AI capabilities in Kubernetes environments.
+---
 
-Currently, it contains a Kind-based demo that sets up a complete local Kubernetes environment and triggers a controlled failure scenario for RCA (Root Cause Analysis).
+## Available Demos
 
-### Available Demos
+The two demos are **independent** — each provisions its own Kind cluster and can be run in any order or in isolation. You do not need to run the Kind demo before the Quarkus RCA demo.
 
-#### 1. Kind Demo
+### 1. Kind Demo
 
-The Kind demo provisions a local Kubernetes cluster using kind and installs all required components to demonstrate CAUSA AI in action.
+Provisions a local Kubernetes cluster using Kind and installs all required components to demonstrate Causa AI in action with a fully local, offline setup.
 
-What the demo does:
+**What the demo does:**
 
-- Creates a kind Kubernetes cluster named causa
-- Installs CAUSA RCA Agent into the cluster
-- Installs Prometheus stack (via kube-prometheus)
-- Installs cAdvisor for container metrics
-- Deploys Ollama in-cluster and pulls the [phi3:mini](https://ollama.com/library/phi3) model to enable fully local, offline root cause analysis.
-- Deploys a Quarkus-based sample application that intentionally causes a Heap Out Of Memory (OOM) condition
+- Creates a Kind Kubernetes cluster named `causa`
+- Installs the Causa RCA Agent into the cluster
+- Installs Prometheus stack (via kube-prometheus) and cAdvisor for container metrics
+- Deploys Ollama in-cluster and pulls the [phi3:mini](https://ollama.com/library/phi3) model for fully local, offline root cause analysis
+- Deploys a Quarkus-based sample application that intentionally causes a heap Out Of Memory (OOM) condition
 - Deploys a load generator that gradually increases heap usage
-- Triggers a controlled OOM failure in the application
-- Allows CAUSA RCA Agent to analyze the failure and produce RCA logs
+- Triggers a controlled OOM failure and allows the Causa RCA Agent to produce RCA output
 
-#### Prerequisites
-
-Ensure the following tools are installed and available in your `$PATH` before running the demo:
+**Prerequisites:**
 
 ```text
-kind
-
-docker
-
-kubectl
-
-git
-
-jq
-
-python3
+kind      docker      kubectl      git      jq      python3     helm
 ```
 
-##### Ollama Model Requirements: 
+> Ollama requires CPU-only execution with a minimum of 4 vCPUs (6+ recommended), at least 8 GB RAM (16 GB recommended), and approximately 2.5–3 GB free disk space for the phi3:mini model weights.
 
-- During deployment, the Ollama pod automatically pulls the required language model so it is available for inference at runtime. Currently, the following model is downloaded:
-
-    - **Model**: [phi3:mini](https://ollama.com/library/phi3) (Provided by Microsoft)
-    - Requires CPU-only execution with a minimum of 4 vCPUs (6+ vCPUs recommended).
-    - Requires at least 8 GB RAM (16 GB recommended for stability).
-    - ~ 2.5 GB to 3 GB free space is required for the model weights.
-    - *Note: CPU and memory requirements are inferred from the model size, as Ollama does not publish per-model resource limits.*
-
-
-
-
-#### How to run the demo
+**Quick start:**
 
 ```bash
 git clone https://github.com/causaai/causa-demos.git
@@ -63,26 +38,49 @@ cd causa-demos/kind
 ./demo.sh
 ```
 
-#### Steps After the Demo Script Completes
-
-Once the Kind demo script finishes running and reports that the Heap OOM has been reached, follow these steps to observe CAUSA AI in action:
-
-- Inspect CAUSA RCA Agent logs
+**Cleanup:**
 
 ```bash
-kubectl logs -f <rca-agent-pod>
+# Remove all resources
+./demo.sh -t
+
+# Remove resources and artifacts directory
+./demo.sh -t -f
 ```
 
-- Clean up resources when done
+---
 
-Once you are done with the demo, proceed to clean it up with `-t` option
+### 2. Quarkus RCA Demo
+
+An end-to-end demo that deploys a **quarkus-perf** workload engineered for chaos testing, installs the full Causa RCA stack, configures LLM credentials, and wires up any MCP-capable AI assistant for AI-powered root cause analysis.
+
+**What the demo does:**
+
+- Provisions the target environment (`kind` or `openshift`) and deploys the full Causa RCA stack via the [Causa RCA installer](https://github.com/causaai/installer)
+- Deploys **quarkus-perf** with chaos scenarios enabled (`large-response`, `idle-timeout`, `memory-cache`) and starts a load-gen job
+- Pushes LLM credentials to Causa Backend (Vertex AI, Bob, Anthropic, OpenAI, and others)
+- Writes Causa MCP config to global user-level files (`~/.bob/settings/mcp.json`, `~/.bob/settings/mcp_settings.json`, `~/.claude.json`)
+- Optionally installs the `causa-rca` skill to Bob or Claude Code via `--skill-path`
+- Prints ready-to-paste RCA prompts
+
+**Prerequisites:**
+
+```text
+kind      kubectl      docker (or podman)      git      python3     helm
+```
+
+**Quick start:**
+
+```bash
+git clone https://github.com/causaai/causa-demos.git
+cd causa-demos/quarkus-rca
+./demo.sh
+```
+
+See **[quarkus-rca/README.md](quarkus-rca/README.md)** for skill installation, LLM setup, and CLI options.
+
+**Cleanup:**
 
 ```bash
 ./demo.sh -t
-```
-
-To also remove the artifacts directory during cleanup, use `-f` with `-t`:
-
-```bash
-./demo.sh -f -t
 ```
