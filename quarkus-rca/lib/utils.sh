@@ -397,6 +397,15 @@ stop_port_forwards() {
     if [[ -n "$_pid_file" && -f "$_pid_file" ]]; then
         while IFS= read -r _pid; do
             [[ -z "$_pid" ]] && continue
+            # Only signal if the PID is still a causa port-forward — a stale pid
+            # file could name a PID the OS recycled. ps -o args= is portable
+            # (no /proc dependency).
+            local _cmd
+            _cmd=$(ps -p "$_pid" -o args= 2>/dev/null || true)
+            if [[ "$_cmd" != *"kubectl port-forward svc/causa-"* ]]; then
+                write_to_log_file "INFO" "stop_port_forwards: skipping PID $_pid (not a causa port-forward: ${_cmd:-gone})"
+                continue
+            fi
             if kill "$_pid" 2>/dev/null; then
                 write_to_log_file "INFO" "stop_port_forwards: killed tunnel PID $_pid"
             fi
@@ -413,6 +422,19 @@ stop_port_forwards() {
     for _lport in "${_ports[@]}"; do
         [[ -z "$_lport" ]] && continue
         pkill -f "kubectl port-forward svc/causa-[a-z]* ${_lport}:" 2>/dev/null || true
+    done
+
+    # kill/pkill return before the socket is released; wait (bounded, per port)
+    # for it to free so a caller that rebinds the port (installer preflight)
+    # doesn't race a still-exiting kubectl. Best-effort: skipped if lsof absent.
+    local _deadline
+    for _lport in "${_ports[@]}"; do
+        [[ -z "$_lport" ]] && continue
+        _deadline=$(( $(date +%s) + 5 ))
+        while lsof -iTCP:"$_lport" -sTCP:LISTEN -n -P &>/dev/null; do
+            [[ $(date +%s) -ge $_deadline ]] && break
+            sleep 0.2
+        done
     done
 }
 

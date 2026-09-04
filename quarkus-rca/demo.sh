@@ -465,13 +465,9 @@ cd "$DEMO_DIR" || { log_error "Failed to change directory to $DEMO_DIR"; exit 1;
 # ===========================================================================
 log_section "Step 1: Installing Causa RCA stack via install.sh"
 
-# On kind the Backend/MCP tunnels from a previous run are detached
-# (nohup + disown) and keep holding 30001/30005 after demo.sh exits. The
-# installer's Kind reuse-path preflight (_check_ports_available) rejects those
-# ports if they are in use, so a re-run fails with "port 30001/30005 in use by
-# kubectl" at Step 1 — before Step 4.5's start_port_forwards would have cleared
-# them. Clear OUR OWN tunnels here first, scoped to the demo's pid file and the
-# causa-* services, so an external process squatting on the port is still caught.
+# Our own tunnels persist on 30001/30005 after a run, and the installer's kind
+# preflight rejects the re-run if they are still bound. start_port_forwards
+# (Step 4.5) clears them too late, so clear our own here first.
 if [[ "$TARGET" == "kind" ]]; then
     stop_port_forwards "$PORTFORWARD_PID_FILE" \
         "$CAUSA_BACKEND_LOCAL_PORT" "$CAUSA_MCP_LOCAL_PORT"
