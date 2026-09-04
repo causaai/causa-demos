@@ -598,6 +598,22 @@ if [[ "$TARGET" == "openshift" ]]; then
         log_file_only "  Run: kubectl get route -n ${NAMESPACE}  to find the route hostname."
         log_validation_success "Causa MCP route (not found after 30s — MCP config will be skipped)"
     fi
+
+    # Resolve the Causa Backend Route directly so its endpoint can be printed
+    # alongside the MCP URL. Best-effort — if not found the backend line is
+    # simply skipped at print time.
+    _OCP_BACKEND_HOST=$(kubectl get route causa-backend \
+        -n "$NAMESPACE" \
+        -o jsonpath='{.spec.host}' 2>>"$LOG_FILE" || true)
+    if [[ -n "$_OCP_BACKEND_HOST" ]]; then
+        CAUSA_BACKEND_URL="https://${_OCP_BACKEND_HOST}"
+        log_install_success "Causa Backend route resolved: ${CAUSA_BACKEND_URL}"
+        write_to_log_file "INFO" "OpenShift CAUSA_BACKEND_URL resolved to: ${CAUSA_BACKEND_URL}"
+    else
+        CAUSA_BACKEND_URL=""
+        log_file_only "Could not resolve Causa Backend route — backend endpoint will not be printed."
+        write_to_log_file "INFO" "OpenShift Causa Backend route not found — backend endpoint print skipped"
+    fi
 fi
 
 # ===========================================================================
@@ -1115,7 +1131,7 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
         echo -e "${COLOR_CYAN}${COLOR_BOLD}----------------------------------------${COLOR_RESET}"
     else
         echo -e "${COLOR_CYAN}Causa MCP:${COLOR_RESET}     ${CAUSA_MCP_URL}/mcp"
-        if [[ "$TARGET" != "openshift" ]]; then
+        if [[ -n "$CAUSA_BACKEND_URL" ]]; then
             echo -e "${COLOR_CYAN}Causa Backend:${COLOR_RESET} ${CAUSA_BACKEND_URL}/api/v1/diagnostics"
         fi
         echo ""
