@@ -367,6 +367,12 @@ PYEOF
 # Terminate mode
 # ---------------------------------------------------------------------------
 if [[ "$TERMINATE" == "true" ]]; then
+    # For openshift, confirm we are on an OpenShift cluster before deleting —
+    # a stale kind context would otherwise run cleanup against the wrong cluster.
+    if [[ "$TARGET" == "openshift" ]] && ! check_cluster_reachability "$TARGET"; then
+        exit 1
+    fi
+
     # Stop the port-forward tunnels started by a previous run — kind only, as
     # tunnels are never started for other targets (openshift uses a Route).
     if [[ "$TARGET" == "kind" ]]; then
