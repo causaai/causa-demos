@@ -386,18 +386,18 @@ wait_for_rollout() {
 
 # stop_port_forwards <pid_file> [<local_port> ...]
 #
-# Kills the tunnels recorded in <pid_file>, then (as a fallback for runs whose
-# pid file was lost) any kubectl port-forward still bound to the given local
-# ports, and removes the pid file.  Safe to call when nothing is running.
+# Kills the tunnels recorded in <pid_file> (verified to still be causa
+# port-forwards), removes the pid file, and waits for the given local ports to
+# be released. Only PIDs this demo recorded are ever signalled, so a developer's
+# own port-forward is never touched. Safe to call when nothing is running.
 stop_port_forwards() {
     local _pid_file="$1"; shift
     local _ports=("$@")
-    local _pid _lport _had_pids=false
+    local _pid _lport
 
     if [[ -n "$_pid_file" && -f "$_pid_file" ]]; then
         while IFS= read -r _pid; do
             [[ -z "$_pid" ]] && continue
-            _had_pids=true
             # Signal only if the PID is still a causa port-forward (guards
             # against a recycled PID). ps -o args= is portable (no /proc).
             local _cmd
@@ -411,15 +411,6 @@ stop_port_forwards() {
             fi
         done < "$_pid_file"
         rm -f "$_pid_file"
-    fi
-
-    # Fallback only when no PIDs were recorded (pid file missing/empty), so a
-    # normal run never blanket-kills a developer's own causa port-forward.
-    if [[ "$_had_pids" == "false" ]]; then
-        for _lport in "${_ports[@]}"; do
-            [[ -z "$_lport" ]] && continue
-            pkill -f "kubectl port-forward svc/causa-[a-z]* ${_lport}:" 2>/dev/null || true
-        done
     fi
 
     # Wait (bounded) for our dying kubectl to release each port before a caller
