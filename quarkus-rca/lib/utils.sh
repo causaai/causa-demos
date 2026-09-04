@@ -95,7 +95,7 @@ check_cluster_reachability() {
     # A reachable cluster is not enough for openshift — a running kind-* context
     # would pass silently. OpenShift always serves route.openshift.io; kind does not.
     if [[ "$_target" == "openshift" ]]; then
-        if ! kubectl get --raw /apis/route.openshift.io >/dev/null 2>>"$LOG_FILE"; then
+        if ! kubectl get --request-timeout=10s --raw /apis/route.openshift.io >/dev/null 2>>"$LOG_FILE"; then
             log_error "Current context '${_ctx:-<none>}' is reachable but does not look like an OpenShift cluster."
             log_error "  (The route.openshift.io API group was not found — this looks like a plain Kubernetes/kind cluster.)"
             log_error "  You are likely still on a kind context from a previous demo run."
