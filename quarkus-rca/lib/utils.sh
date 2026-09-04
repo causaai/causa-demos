@@ -392,14 +392,14 @@ wait_for_rollout() {
 stop_port_forwards() {
     local _pid_file="$1"; shift
     local _ports=("$@")
-    local _pid _lport
+    local _pid _lport _had_pids=false
 
     if [[ -n "$_pid_file" && -f "$_pid_file" ]]; then
         while IFS= read -r _pid; do
             [[ -z "$_pid" ]] && continue
-            # Only signal if the PID is still a causa port-forward — a stale pid
-            # file could name a PID the OS recycled. ps -o args= is portable
-            # (no /proc dependency).
+            _had_pids=true
+            # Signal only if the PID is still a causa port-forward (guards
+            # against a recycled PID). ps -o args= is portable (no /proc).
             local _cmd
             _cmd=$(ps -p "$_pid" -o args= 2>/dev/null || true)
             if [[ "$_cmd" != *"kubectl port-forward svc/causa-"* ]]; then
@@ -413,25 +413,26 @@ stop_port_forwards() {
         rm -f "$_pid_file"
     fi
 
-    # Fallback (only reached when the pid file was lost): kill orphaned demo
-    # tunnels by matching our own launch form, `kubectl port-forward svc/causa-*
-    # <local_port>:`.  The `svc/causa-` prefix scopes the match to THIS demo's
-    # services so we never kill an unrelated `kubectl port-forward` a developer
-    # happens to be running on the same local port from another terminal.  No
-    # wrapper loop means killing kubectl directly is enough — it cannot respawn.
-    for _lport in "${_ports[@]}"; do
-        [[ -z "$_lport" ]] && continue
-        pkill -f "kubectl port-forward svc/causa-[a-z]* ${_lport}:" 2>/dev/null || true
-    done
+    # Fallback only when no PIDs were recorded (pid file missing/empty), so a
+    # normal run never blanket-kills a developer's own causa port-forward.
+    if [[ "$_had_pids" == "false" ]]; then
+        for _lport in "${_ports[@]}"; do
+            [[ -z "$_lport" ]] && continue
+            pkill -f "kubectl port-forward svc/causa-[a-z]* ${_lport}:" 2>/dev/null || true
+        done
+    fi
 
-    # kill/pkill return before the socket is released; wait (bounded, per port)
-    # for it to free so a caller that rebinds the port (installer preflight)
-    # doesn't race a still-exiting kubectl. Best-effort: skipped if lsof absent.
-    local _deadline
+    # Wait (bounded) for our dying kubectl to release each port before a caller
+    # rebinds it. Only wait while a kubectl holds it; any other process is left
+    # for the installer to report. Best-effort: skipped if lsof is absent.
+    local _deadline _holder
     for _lport in "${_ports[@]}"; do
         [[ -z "$_lport" ]] && continue
         _deadline=$(( $(date +%s) + 5 ))
-        while lsof -iTCP:"$_lport" -sTCP:LISTEN -n -P &>/dev/null; do
+        while :; do
+            _holder=$(lsof -iTCP:"$_lport" -sTCP:LISTEN -n -P -Fc 2>/dev/null \
+                | sed -n 's/^c//p' | head -1)
+            [[ "$_holder" != kubectl* ]] && break
             [[ $(date +%s) -ge $_deadline ]] && break
             sleep 0.2
         done
