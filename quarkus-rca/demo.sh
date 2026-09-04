@@ -466,6 +466,14 @@ cd "$DEMO_DIR" || { log_error "Failed to change directory to $DEMO_DIR"; exit 1;
 # ===========================================================================
 log_section "Step 1: Installing Causa RCA stack via install.sh"
 
+# Our own tunnels persist on 30001/30005 after a run, and the installer's kind
+# preflight rejects the re-run if they are still bound. start_port_forwards
+# (Step 4.5) clears them too late, so clear our own here first.
+if [[ "$TARGET" == "kind" ]]; then
+    stop_port_forwards "$PORTFORWARD_PID_FILE" \
+        "$CAUSA_BACKEND_LOCAL_PORT" "$CAUSA_MCP_LOCAL_PORT"
+fi
+
 # ---------------------------------------------------------------------------
 # 1a: Clone / update the installer repo
 # ---------------------------------------------------------------------------
