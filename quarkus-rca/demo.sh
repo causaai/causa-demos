@@ -1115,9 +1115,14 @@ _POD_DISPLAY="${_QP_POD:-quarkus-perf-<generated-suffix>}"
         echo -e "${COLOR_CYAN}${COLOR_BOLD}----------------------------------------${COLOR_RESET}"
     else
         echo -e "${COLOR_CYAN}Causa MCP:${COLOR_RESET}     ${CAUSA_MCP_URL}/mcp"
-        if [[ "$TARGET" != "openshift" ]]; then
-            echo -e "${COLOR_CYAN}Causa Backend:${COLOR_RESET} ${CAUSA_BACKEND_URL}/api/v1/diagnostics"
+        if [[ "$TARGET" == "openshift" ]]; then
+            # OpenShift route names are consistent — the backend Route host is the
+            # MCP host with "causa-mcp" swapped for "causa-backend".
+            _CAUSA_BACKEND_URL="${CAUSA_MCP_URL/causa-mcp/causa-backend}"
+        else
+            _CAUSA_BACKEND_URL="$CAUSA_BACKEND_URL"
         fi
+        echo -e "${COLOR_CYAN}Causa Backend:${COLOR_RESET} ${_CAUSA_BACKEND_URL}/api/v1/diagnostics"
         echo ""
         echo -e "${COLOR_CYAN}${COLOR_BOLD}----------------------------------------${COLOR_RESET}"
         if [[ "$_IS_BOB_SKILL_PATH" == "true" ]]; then
