@@ -82,6 +82,10 @@ trap '_demo_exit_trap' INT TERM
 # Defaults
 # ---------------------------------------------------------------------------
 NAMESPACE="causa-rca"
+# Whether the user set the target (env or --target). If not, terminate derives it
+# from the current kubectl context instead of defaulting to kind.
+_TARGET_EXPLICIT=false
+[[ -n "${TARGET:-}" ]] && _TARGET_EXPLICIT=true
 TARGET="${TARGET:-kind}"
 SKILL_PATH=""
 TERMINATE=false
@@ -229,7 +233,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --target)
             [[ -z "${2:-}" ]] && { echo "ERROR: value required for --target" >&2; exit 1; }
-            TARGET="$2"; shift 2 ;;
+            TARGET="$2"; _TARGET_EXPLICIT=true; shift 2 ;;
         -n)
             [[ -z "${2:-}" ]] && { echo "ERROR: value required for -n" >&2; exit 1; }
             NAMESPACE="$2"; shift 2 ;;
@@ -367,14 +371,82 @@ PYEOF
 # Terminate mode
 # ---------------------------------------------------------------------------
 if [[ "$TERMINATE" == "true" ]]; then
-    # Stop the port-forward tunnels started by a previous run — kind only, as
-    # tunnels are never started for other targets (openshift uses a Route).
-    if [[ "$TARGET" == "kind" ]]; then
-        stop_port_forwards "$PORTFORWARD_PID_FILE" \
-            "$CAUSA_BACKEND_LOCAL_PORT" "$CAUSA_MCP_LOCAL_PORT"
+    # Current context drives target detection below and is restored on exit.
+    _ORIG_KUBE_CONTEXT="$(kubectl config current-context 2>/dev/null || true)"
+
+    # No context → no cluster to act on. Stop before touching anything.
+    if [[ -z "$_ORIG_KUBE_CONTEXT" ]]; then
+        log_error "No kubectl context is set — nothing to tear down."
+        log_error "  Set a context and re-run: kubectl config use-context <ctx>"
+        exit 1
     fi
 
-    terminate_demo "$NAMESPACE" "$DEMO_DIR" "$SKIP_INSTALLER" "$DELETE_CLUSTER" "$TARGET"
+    # Restore the context on exit — the installer's kind uninstall switches it.
+    _restore_kube_context() {
+        local _cur
+        _cur="$(kubectl config current-context 2>/dev/null || true)"
+        if [[ -n "$_ORIG_KUBE_CONTEXT" && "$_cur" != "$_ORIG_KUBE_CONTEXT" ]]; then
+            if kubectl config use-context "$_ORIG_KUBE_CONTEXT" >>"$LOG_FILE" 2>&1; then
+                write_to_log_file "INFO" "Restored kubectl context to '$_ORIG_KUBE_CONTEXT' after terminate"
+            else
+                write_to_log_file "WARN" "Could not restore kubectl context to '$_ORIG_KUBE_CONTEXT' — set it manually with: kubectl config use-context '$_ORIG_KUBE_CONTEXT'"
+            fi
+        fi
+    }
+    trap '_restore_kube_context' EXIT
+
+    # No --target: detect from the cluster. Verify reachability, then classify
+    # positively (openshift = route.openshift.io, kind = 'kind-*' context) and
+    # abort on anything else rather than guessing and tearing down the wrong cluster.
+    if [[ "$_TARGET_EXPLICIT" == "false" ]]; then
+        if ! kubectl cluster-info --request-timeout=10s >>"$LOG_FILE" 2>&1; then
+            log_error "Context '$_ORIG_KUBE_CONTEXT' is not reachable — cannot determine the platform to tear down."
+            log_error "  Fix the context or pass --target explicitly, then re-run."
+            exit 1
+        fi
+        if kubectl get --request-timeout=10s --raw /apis/route.openshift.io >/dev/null 2>/dev/null; then
+            TARGET="openshift"
+            log_file_only "OpenShift detected on context '$_ORIG_KUBE_CONTEXT' — tearing down as openshift (pass --target to override)"
+        elif [[ "$_ORIG_KUBE_CONTEXT" == kind-* ]]; then
+            TARGET="kind"
+            log_file_only "kind context '$_ORIG_KUBE_CONTEXT' — tearing down as kind (pass --target to override)"
+        else
+            log_error "Context '$_ORIG_KUBE_CONTEXT' is reachable but is neither OpenShift nor a kind cluster."
+            log_error "  Refusing to guess the platform — pass --target explicitly, then re-run."
+            exit 1
+        fi
+    fi
+
+    # For openshift, decide what to clean up based on the cluster probe. The
+    # script can only tell whether the cluster is reachable, not why it isn't:
+    #   rc 2 (reachable but NOT OpenShift, e.g. a live kind context) → a wrong
+    #        live cluster is present; abort and touch nothing, as no teardown was
+    #        intended against it.
+    #   rc 1 (nothing reachable) → platform cannot be verified, but there is no
+    #        live cluster to act on wrongly, so skip cluster-side teardown and
+    #        run only the local MCP-config cleanup below (needs no cluster).
+    #   rc 0 → reachable and confirmed OpenShift; full cleanup.
+    _SKIP_CLUSTER_CLEANUP=false
+    if [[ "$TARGET" == "openshift" ]]; then
+        check_cluster_reachability "$TARGET"; _reach_rc=$?
+        if [[ $_reach_rc -eq 2 ]]; then
+            exit 1
+        elif [[ $_reach_rc -ne 0 ]]; then
+            _SKIP_CLUSTER_CLEANUP=true
+            log_file_only "Cluster not reachable — skipping cluster-side teardown; running local MCP-config cleanup only."
+        fi
+    fi
+
+    if [[ "$_SKIP_CLUSTER_CLEANUP" == "false" ]]; then
+        # Stop the port-forward tunnels started by a previous run — kind only, as
+        # tunnels are never started for other targets (openshift uses a Route).
+        if [[ "$TARGET" == "kind" ]]; then
+            stop_port_forwards "$PORTFORWARD_PID_FILE" \
+                "$CAUSA_BACKEND_LOCAL_PORT" "$CAUSA_MCP_LOCAL_PORT"
+        fi
+
+        terminate_demo "$NAMESPACE" "$DEMO_DIR" "$SKIP_INSTALLER" "$DELETE_CLUSTER" "$TARGET"
+    fi
 
     # Remove causa-rca from all global MCP config files that exist.
     # Only the causa-rca key is removed — all other servers are preserved.

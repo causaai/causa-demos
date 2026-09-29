@@ -69,21 +69,62 @@ check_prerequisites() {
 }
 
 # check_cluster_reachability
+# Return codes:
+#   0 — cluster reachable (and, for openshift, confirmed to be OpenShift)
+#   1 — cluster API not reachable (reason unknowable: down, deleted, bad
+#       kubeconfig, or a stale context pointing at a gone cluster)
+#   2 — reachable but wrong platform for openshift target (e.g. a live kind context)
 # Verifies the Kubernetes API server is reachable before deployment starts.
 # Prints a clear error and returns non-zero when the cluster is not available.
 check_cluster_reachability() {
     local _target="${1:-kind}"
-    if ! kubectl cluster-info >>"$LOG_FILE" 2>&1; then
+    # The script uses the current kubeconfig context and never switches it, so
+    # surface it — a stale context is the most common cause of failure here.
+    local _ctx
+    _ctx=$(kubectl config current-context 2>/dev/null || true)
+    write_to_log_file "INFO" "Current kubeconfig context: ${_ctx:-<none>}"
+    # No context → kubectl blocks on localhost:8080 until timeout. Fail fast.
+    if [[ -z "$_ctx" ]]; then
+        log_error "No current kubeconfig context is set."
+        log_error "Set one before running:"
+        if [[ "$_target" == "openshift" ]]; then
+            log_error "    oc login <api-url> --token=<token>"
+            log_error "    kubectl config current-context   # confirm it is the OpenShift cluster"
+        else
+            log_error "    kubectl config use-context <context>   # or 'kind create cluster' for a kind target"
+        fi
+        return 1
+    fi
+    # --request-timeout bounds the probe so a bad context fails fast (~10s).
+    if ! kubectl cluster-info --request-timeout=10s >>"$LOG_FILE" 2>&1; then
         log_error "Kubernetes API server is not reachable."
+        log_error "  Current kubeconfig context: ${_ctx:-<none>}"
         log_error "Ensure your cluster is running and your kubeconfig is correct."
         if [[ "$_target" == "openshift" ]]; then
-            log_error "  openshift target: run 'oc login <cluster-url>' first, or check 'kubectl cluster-info'."
+            log_error "  openshift target: run 'oc login <cluster-url>' first, then 'kubectl config current-context' to confirm."
+            log_error "  (If you just ran a kind demo, your context may still point at the deleted kind cluster.)"
         else
             log_error "  kind target: run 'kind create cluster' first, or check 'kubectl cluster-info'."
         fi
         return 1
     fi
-    log_file_only "Kubernetes cluster is reachable"
+
+    # A reachable cluster is not enough for openshift — a running kind-* context
+    # would pass silently. OpenShift always serves route.openshift.io; kind does not.
+    if [[ "$_target" == "openshift" ]]; then
+        if ! kubectl get --request-timeout=10s --raw /apis/route.openshift.io >/dev/null 2>>"$LOG_FILE"; then
+            log_error "Current context '${_ctx:-<none>}' is reachable but does not look like an OpenShift cluster."
+            log_error "  (The route.openshift.io API group was not found — this looks like a plain Kubernetes/kind cluster.)"
+            log_error "  You are likely still on a kind context from a previous demo run."
+            log_error "  Switch to your OpenShift cluster first:"
+            log_error "    oc login <api-url> --token=<token>"
+            log_error "    kubectl config current-context   # confirm it is the OpenShift cluster"
+            return 2
+        fi
+        log_file_only "OpenShift API detected (route.openshift.io) on context: ${_ctx:-<none>}"
+    fi
+
+    log_file_only "Kubernetes cluster is reachable (context: ${_ctx:-<none>})"
     return 0
 }
 
