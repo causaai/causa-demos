@@ -12,11 +12,11 @@
 #     Phase 1 — called BEFORE the installer.
 #     Creates the causa-llm-secrets K8s Secret (anthropic/bob providers).
 #     No-op for vertex-ai-anthropic — credentials are delivered via the
-#     config API POST in Phase 2 only.
+#     config API in Phase 2 only.
 #
 #   configure_llm_runtime  LLM_ENV_FILE  NAMESPACE
 #     Phase 2 — called AFTER the installer.
-#     POSTs config keys to /api/v1/configs, including
+#     PUTs LLM config to PUT /api/v1/configs/llm/{provider}, including
 #     GOOGLE_APPLICATION_CREDENTIALS as base64-encoded file contents for
 #     vertex-ai-anthropic (piped through stdin, never a CLI argument).
 ################################################################################
@@ -195,21 +195,27 @@ create_llm_secrets() {
 # ---------------------------------------------------------------------------
 # configure_llm_runtime  LLM_ENV_FILE  NAMESPACE
 #
-# Phase 2 — POST config keys to the running causa-backend after the
+# Phase 2 — PUT LLM config to the running causa-backend after the
 # installer has deployed it.
 #
-# Keys posted for each provider:
+# Endpoint: PUT /api/v1/configs/llm/{provider}
+# Provider path values: VERTEX_AI, ANTHROPIC, BOB
 #
-#   vertex-ai-anthropic:
-#     LLM_PROVIDER, LLM_MODEL_NAME, VERTEX_PROJECT_ID, VERTEX_LOCATION,
-#     GOOGLE_APPLICATION_CREDENTIALS (base64-encoded contents of the credentials
-#     file, piped through stdin — never passed as a command-line argument).
+# Payload structure per provider:
 #
-#   anthropic:
-#     LLM_PROVIDER, LLM_MODEL_NAME, LLM_API_KEY.
+#   vertex-ai-anthropic  (→ provider path: VERTEX_AI):
+#     url, models, temperature, is_active=true,
+#     auth_config: { authType: SA_JSON_KEY, credentialsJson: <base64-encoded JSON> }
+#     additional_config: { projectId, location }
 #
-#   bob:
-#     LLM_PROVIDER, LLM_API_KEY (when set), BOB_SHELL_PATH (when set).
+#   anthropic  (→ provider path: ANTHROPIC):
+#     models, temperature, is_active=true,
+#     auth_config: { authType: API_KEY, apiKey: <LLM_API_KEY> }
+#
+#   bob  (→ provider path: BOB):
+#     is_active=true,
+#     auth_config: { authType: API_KEY, apiKey: <LLM_API_KEY> }    (when set)
+#     additional_config: { bobShellPath: <BOB_SHELL_PATH> }         (when set)
 #
 # NOTE: both create_llm_secrets and configure_llm_runtime source llm.env
 # directly into the current shell with `set -a` (required so kubectl/curl
@@ -247,80 +253,92 @@ configure_llm_runtime() {
         _fallback="$(dirname "$llm_env_file")/causa-gcp-key.json"
         [[ -f "$_fallback" ]] && creds_file="$_fallback"
     fi
-    # Build the payload — read credentials file inside Python so the base64
-    # blob never touches a shell variable or the process environment.
-    local payload
-    payload=$(python3 - "$creds_file" << 'PYEOF'
-import os, sys, json, base64
+    # Map llm.env provider name to the new API path segment and build the
+    # structured payload — credentials file is read inside Python so the
+    # base64 blob never touches a shell variable or the process environment.
+    local provider_path payload
+    provider_path=$(python3 -c "
+import os, sys
+p = os.getenv('LLM_PROVIDER', '').strip().lower()
+mapping = {
+    'vertex-ai-anthropic': 'VERTEX_AI',
+    'anthropic':           'ANTHROPIC',
+    'bob':                 'BOB',
+    'openai':              'OPENAI',
+}
+print(mapping.get(p, ''))
+")
 
-configs = {}
-
-provider    = os.getenv("LLM_PROVIDER",    "").strip()
-model       = os.getenv("LLM_MODEL_NAME",  "").strip()
-temperature = os.getenv("LLM_TEMPERATURE", "").strip()
-endpoint    = os.getenv("LLM_ENDPOINT",    "").strip()
-
-if provider:    configs["LLM_PROVIDER"]    = provider
-if model:       configs["LLM_MODEL_NAME"]  = model
-if temperature: configs["LLM_TEMPERATURE"] = temperature
-if endpoint:    configs["LLM_ENDPOINT"]    = endpoint
-
-# Vertex AI — project and location are non-sensitive; credentials are
-# base64-encoded and posted so the backend can resolve ADC regardless of
-# whether a volume mount is present (supports both ADC JSON and service-
-# account key files).
-vertex_proj = os.getenv("VERTEX_PROJECT_ID", "").strip()
-vertex_loc  = os.getenv("VERTEX_LOCATION",   "").strip()
-if vertex_proj: configs["VERTEX_PROJECT_ID"] = vertex_proj
-if vertex_loc:  configs["VERTEX_LOCATION"]   = vertex_loc
-
-if provider == "vertex-ai-anthropic":
-    # Path is passed as argv[1] — not via the environment — to avoid
-    # exposing the resolved path (or its contents) in the process env.
-    creds_path = sys.argv[1] if len(sys.argv) > 1 else ""
-    if creds_path and os.path.isfile(creds_path):
-        with open(creds_path, "rb") as f:
-            configs["GOOGLE_APPLICATION_CREDENTIALS"] = base64.b64encode(f.read()).decode()
-    else:
-        print(f"WARN: credentials file not found at '{creds_path}' — GOOGLE_APPLICATION_CREDENTIALS will not be posted", file=sys.stderr)
-
-# Anthropic / Bob — API key must go via the API (no volume mount for these providers)
-if provider in ("anthropic", "bob"):
-    api_key = os.getenv("LLM_API_KEY", "").strip()
-    if api_key:
-        configs["LLM_API_KEY"] = api_key
-
-# Bob provider — optional path to the bob binary
-if provider == "bob":
-    bob_path = os.getenv("BOB_SHELL_PATH", os.getenv("BOB_PATH", "")).strip()
-    if bob_path:
-        configs["BOB_SHELL_PATH"] = bob_path
-
-print(json.dumps({"configs": configs}))
-PYEOF
-)
-
-    # Nothing to push
-    local has_config
-    has_config=$(python3 -c "
-import json, sys
-print('true' if json.loads(sys.argv[1]).get('configs') else 'false')
-" "$payload")
-
-    if [[ "$has_config" != "true" ]]; then
+    if [[ -z "$provider_path" ]]; then
         write_to_log_file "INFO" "No LLM provider configured — Causa Backend will use heuristic RCA"
         log_validation_success "Causa Backend LLM config (skipped — no provider set in llm.env)"
         return 0
     fi
 
-    # Log what is being pushed (keys only — values are redacted from the log).
-    local _payload_keys
-    _payload_keys=$(python3 -c "
-import json, sys
-keys = list(json.loads(sys.argv[1]).get('configs', {}).keys())
-print(', '.join(keys))
-" "$payload" 2>/dev/null || echo "unknown")
-    write_to_log_file "INFO" "Pushing LLM config (provider: ${LLM_PROVIDER:-}, keys: $_payload_keys)"
+    payload=$(python3 - "$creds_file" << 'PYEOF'
+import os, sys, json, base64
+
+provider    = os.getenv("LLM_PROVIDER",    "").strip().lower()
+model       = os.getenv("LLM_MODEL_NAME",  "").strip()
+temperature = os.getenv("LLM_TEMPERATURE", "").strip()
+endpoint    = os.getenv("LLM_ENDPOINT",    "").strip()
+
+body = {"is_active": True}
+
+if model:
+    body["models"] = [model]
+if temperature:
+    try:
+        body["temperature"] = float(temperature)
+    except ValueError:
+        pass
+if endpoint:
+    body["url"] = endpoint
+
+if provider == "vertex-ai-anthropic":
+    vertex_proj = os.getenv("VERTEX_PROJECT_ID", "").strip()
+    vertex_loc  = os.getenv("VERTEX_LOCATION",   "us-east5").strip()
+
+    # Vertex AI Anthropic endpoint — region is substituted into the URL.
+    # Default region us-east5 used when VERTEX_LOCATION is not set.
+    body["url"] = f"https://{vertex_loc}-aiplatform.googleapis.com"
+
+    # Path is passed as argv[1] — not via the environment — to avoid
+    # exposing the resolved path (or its contents) in the process env.
+    creds_path = sys.argv[1] if len(sys.argv) > 1 else ""
+    creds_b64 = ""
+    if creds_path and os.path.isfile(creds_path):
+        with open(creds_path, "rb") as f:
+            creds_b64 = base64.b64encode(f.read()).decode()
+    else:
+        print(f"WARN: credentials file not found at '{creds_path}' — credentialsJson will not be set", file=sys.stderr)
+
+    body["auth_config"] = {"authType": "SA_JSON_KEY", "credentialsJson": creds_b64}
+    additional = {}
+    if vertex_proj: additional["projectId"] = vertex_proj
+    if vertex_loc:  additional["location"]  = vertex_loc
+    if additional:  body["additional_config"] = additional
+
+elif provider == "anthropic":
+    api_key = os.getenv("LLM_API_KEY", "").strip()
+    body["url"] = "https://api.anthropic.com"
+    body["auth_config"] = {"authType": "API_KEY", "apiKey": api_key}
+
+elif provider == "bob":
+    api_key  = os.getenv("LLM_API_KEY",   "").strip()
+    bob_path = os.getenv("BOB_SHELL_PATH", os.getenv("BOB_PATH", "")).strip()
+    body["url"] = "http://localhost"
+    auth = {"authType": "API_KEY"}
+    if api_key: auth["apiKey"] = api_key
+    body["auth_config"] = auth
+    if bob_path:
+        body["additional_config"] = {"bobShellPath": bob_path}
+
+print(json.dumps(body))
+PYEOF
+)
+
+    write_to_log_file "INFO" "Pushing LLM config (provider: ${LLM_PROVIDER:-}, api path: ${provider_path})"
 
     local causa_pod
     causa_pod=$(kubectl get pods \
@@ -335,7 +353,7 @@ print(', '.join(keys))
         return 0
     fi
 
-    start_spinner "Pushing config to Causa Backend (up to 5 attempts)..."
+    start_spinner "Pushing LLM config to Causa Backend (up to 5 attempts)..."
     local cfg_rc=1 attempt
     for attempt in 1 2 3 4 5; do
         cfg_rc=0
@@ -344,8 +362,8 @@ print(', '.join(keys))
         # cannot be observed via ps, /proc, audit logs, or command tracing.
         printf '%s' "$payload" | \
         kubectl exec -i -n "$namespace" "$causa_pod" -- \
-            curl -sf --max-time 10 \
-            -X POST "http://localhost:8080/api/v1/configs" \
+            curl -sS --fail-with-body --max-time 10 \
+            -X PUT "http://localhost:8080/api/v1/configs/llm/${provider_path}" \
             -H "Content-Type: application/json" \
             -d @- \
             >>"${LOG_FILE}" 2>&1 || cfg_rc=$?
