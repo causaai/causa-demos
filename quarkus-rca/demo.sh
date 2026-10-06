@@ -114,7 +114,7 @@ QUARKUS_PERF_SUBDIR="quarkus-perf"
 # To use a different fork or branch, change these variables or pass CLI flags.
 INSTALLER_NAME="installer"
 INSTALLER_URL="${INSTALLER_URL:-https://github.com/causaai/installer}"
-INSTALLER_BRANCH="${INSTALLER_BRANCH:-mvp_demo}"
+INSTALLER_BRANCH="${INSTALLER_BRANCH:-main}"
 
 # On kind the Causa Backend/MCP are ClusterIP services reached via kubectl
 # port-forward (started in Step 4.5); these local ports are the tunnel endpoints.
@@ -159,7 +159,7 @@ show_help() {
     echo "    --installer-url URL      Git URL of the installer repo"
     echo "                             Default: https://github.com/causaai/installer"
     echo "    --installer-branch BRANCH  Branch to check out from the installer repo"
-    echo "                               Default: mvp_demo"
+    echo "                               Default: main"
     echo "    --chaos-lab-url URL      Git URL of the chaos-lab repo"
     echo "                             Default: https://github.com/causaai/chaos-lab.git"
     echo "    --chaos-lab-branch BRANCH  Branch to check out from the chaos-lab repo"
