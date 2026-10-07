@@ -64,7 +64,7 @@ cd causa-demos/quarkus-rca
 | `--skill-path DIR`          | —                                          | Directory to install the `causa-rca` skill into (e.g. `~/.bob/skills`). |
 | `--skip-installer`          | —                                          | Skip running `install.sh` when the stack is already deployed.           |
 | `--installer-url URL`       | `https://github.com/causaai/installer`     | Git URL of the installer repo.                                          |
-| `--installer-branch BRANCH` | `mvp_demo`                                 | Branch to check out from the installer repo.                            |
+| `--installer-branch BRANCH` | `main`                                 | Branch to check out from the installer repo.                            |
 | `--chaos-lab-url URL`       | `https://github.com/causaai/chaos-lab.git` | Git URL of the chaos-lab repo.                                          |
 | `--chaos-lab-branch BRANCH` | `main`                                     | Branch to check out from the chaos-lab repo.                            |
 | `-t`                        | —                                          | Terminate mode: clean up all resources (keeps the Kind cluster).        |
