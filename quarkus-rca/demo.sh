@@ -18,7 +18,7 @@
 #   Step 2.5 — Patches causa-backend with CAUSA_MCP_QUARKUS_METRICS_BASE_URL
 #
 #   Step 3   — Sources llm.env, creates credentials Secret, and pushes
-#               LLM config to Causa via POST /api/v1/configs
+#               LLM config to Causa via PUT /api/v1/configs/llm/{provider}
 #
 #   Step 4   — Optionally installs the causa-rca SKILL.md to a user-supplied
 #               path via --skill-path <dir>.

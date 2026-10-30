@@ -55,7 +55,7 @@ LLM_API_KEY=<your-api-key>
 
 ## Provider: `bob`
 
-Uses IBM Bob as the backend RCA LLM. `LLM_API_KEY` is required when Bob is configured with API key authentication; `BOB_SHELL_PATH` is optional and defaults to `bob` on `PATH`.
+Uses IBM Bob as the backend RCA LLM. `LLM_MODEL_NAME` is optional and defaults to `bob`. `LLM_API_KEY` is required when Bob is configured with API key authentication; `BOB_SHELL_PATH` is optional and defaults to `bob` on `PATH`.
 
 ### Step 1 — Configure `llm.env`
 
@@ -68,6 +68,7 @@ Set the following values:
 | Variable         | Value                                                            |
 |------------------|------------------------------------------------------------------|
 | `LLM_PROVIDER`   | `bob`                                                            |
+| `LLM_MODEL_NAME` | model name (optional, defaults to `bob`)                         |
 | `LLM_API_KEY`    | your Bob API key (if required)                                   |
 | `BOB_SHELL_PATH` | path to the `bob` binary (optional, defaults to `bob` on `PATH`) |
 
@@ -75,6 +76,7 @@ Example:
 
 ```bash
 LLM_PROVIDER=bob
+LLM_MODEL_NAME=bob
 LLM_API_KEY=<your-bob-api-key>
 # BOB_SHELL_PATH=/usr/local/bin/bob  # optional
 ```
@@ -211,7 +213,7 @@ variables are missing or incorrect.
 | Variable                         | `anthropic` | `vertex-ai-anthropic` | `bob`      |
 |----------------------------------|-------------|-----------------------|------------|
 | `LLM_PROVIDER`                   | ✅ required  | ✅ required            | ✅ required |
-| `LLM_MODEL_NAME`                 | ✅ required  | ✅ required            | —          |
+| `LLM_MODEL_NAME`                 | ✅ required  | ✅ required            | optional (defaults to `bob`) |
 | `LLM_API_KEY`                    | ✅ required  | —                     | optional   |
 | `BOB_SHELL_PATH`                 | —           | —                     | optional   |
 | `VERTEX_PROJECT_ID`              | —           | ✅ required            | —          |
